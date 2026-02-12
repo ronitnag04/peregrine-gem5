@@ -4,6 +4,10 @@ from m5.objects import (
     BranchPredictor,
     TournamentBP,
 )
+from m5.objects.FuncUnit import *
+from m5.objects.FuncUnitConfig import *
+from m5.objects.FUPool import FUPool
+from m5.objects.IQUnit import IQUnit
 from m5.params import Param
 
 from gem5.components.boards.simple_board import SimpleBoard
@@ -19,6 +23,20 @@ from gem5.resources.resource import (
     obtain_resource,
 )
 from gem5.simulate.simulator import Simulator
+
+
+# Custom FU pool with modified counts
+class MyFUPool(FUPool):
+    FUList = [
+        IntALU(count=2),
+        IntMultDiv(count=2),
+        FP_ALU(count=4),
+        FP_MultDiv(count=2),
+        SIMD_Unit(
+            count=4
+        ),  # TODO: sieve bmark not working w/o SIMD Unit, may need to recompile
+        RdWrPort(count=4),
+    ]
 
 
 class MyOutOfOrderCore(BaseCPUCore):
@@ -37,19 +55,24 @@ class MyOutOfOrderCore(BaseCPUCore):
         sq_entries,
         branch_predictor,
     ):
-
         super().__init__(X86O3CPU(), ISA.X86)
+        # TODO: Convert all parameter settings to use Param notation
         self.core.fetchWidth = fetch_width
         self.core.decodeWidth = decode_width
         self.core.renameWidth = rename_width
-        self.core.issueWidth = issue_width
-        self.core.wbWidth = wb_width
+        self.core.issueWidth = issue_width  # not in concorde parameterization (split between alu, fp, l/s)
+        self.core.instQueues = IQUnit(fuPool=MyFUPool())
+        self.core.wbWidth = wb_width  # not in concorde parameterization
         self.core.commitWidth = commit_width
 
         self.core.numROBEntries = rob_size
 
-        self.core.numPhysIntRegs = num_int_regs
-        self.core.numPhysFloatRegs = num_fp_regs
+        self.core.numPhysIntRegs = (
+            num_int_regs  # not in concorde parameterization
+        )
+        self.core.numPhysFloatRegs = (
+            num_fp_regs  # not in concorde parameterization
+        )
 
         self.core.LQEntries = lq_entries
         self.core.SQEntries = sq_entries
@@ -121,7 +144,7 @@ board = SimpleBoard(
 
 # binary = obtain_resource("x86-hello64-static")
 binary = BinaryResource(
-    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/branch_storm"
+    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/towers"
 )
 board.set_se_binary_workload(binary)
 
