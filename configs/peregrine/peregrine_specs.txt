@@ -1,0 +1,20 @@
+ROB size
+Commit width
+Load queue size
+Store queue size
+ALU issue width
+Floating-point issue width
+Load-store issue width
+Number of load-store pipes
+Number of load pipes
+Fetch width
+Decode width
+Rename width
+Number of fetch buffers
+Maximum I-cache fills
+Branch predictor
+Percent misprediction for Simple BP
+L1d cache size (kB)
+L1i cache size (kB)
+L2 cache size (kB)
+L1d stride prefetcher degree
