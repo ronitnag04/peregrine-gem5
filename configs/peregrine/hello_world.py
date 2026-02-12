@@ -29,10 +29,10 @@ board = SimpleBoard(
 )
 
 # Set the workload.
-# binary = obtain_resource("x86-hello64-static")
-binary = BinaryResource(
-    local_path="/home/ubuntu/gem5/tests/peregrine-bmarks/sieve"
-)
+binary = obtain_resource("x86-hello64-static")
+# binary = BinaryResource(
+#     local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/sieve"
+# )
 board.set_se_binary_workload(binary)
 
 # Setup the Simulator and run the simulation.

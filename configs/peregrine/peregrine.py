@@ -121,7 +121,7 @@ board = SimpleBoard(
 
 # binary = obtain_resource("x86-hello64-static")
 binary = BinaryResource(
-    local_path="/home/ubuntu/gem5/tests/peregrine-bmarks/branch_storm"
+    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/branch_storm"
 )
 board.set_se_binary_workload(binary)
 
