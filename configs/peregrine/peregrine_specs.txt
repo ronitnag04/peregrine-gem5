@@ -17,4 +17,4 @@
 [x] L1d cache size (kB)
 [x] L1i cache size (kB)
 [x] L2 cache size (kB)
-[ ] L1d stride prefetcher degree
+[x] L1d stride prefetcher degree
