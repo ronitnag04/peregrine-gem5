@@ -38,16 +38,36 @@ from gem5.resources.resource import BinaryResource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.override import overrides
 
+INT_REG_ISSUE_WIDTH = 2
+INT_MULT_DIV_ISSUE_WIDTH = 2
+FP_REG_ISSUE_WIDTH = 2
+FP_MULT_DIV_ISSUE_WIDTH = 2
+READ_PORT_ISSUE_WIDTH = 2
+RDWR_PORT_ISSUE_WIDTH = 2
+SIMD_UNIT_ISSUE_WIDTH = 4
+ISSUE_WIDTH = (
+    INT_REG_ISSUE_WIDTH
+    + INT_MULT_DIV_ISSUE_WIDTH
+    + FP_REG_ISSUE_WIDTH
+    + FP_MULT_DIV_ISSUE_WIDTH
+    + READ_PORT_ISSUE_WIDTH
+    + RDWR_PORT_ISSUE_WIDTH
+    + SIMD_UNIT_ISSUE_WIDTH
+)
+
+assert ISSUE_WIDTH <= 16, "Issue width must be less than or equal to 16"
+
 
 # Custom FU pool with modified counts
 class MyFUPool(FUPool):
     FUList = [
-        IntALU(count=2),
-        IntMultDiv(count=2),
-        FP_ALU(count=4),
-        FP_MultDiv(count=2),
-        RdWrPort(count=4),
-        SIMD_Unit(count=4),
+        IntALU(count=INT_REG_ISSUE_WIDTH),
+        IntMultDiv(count=INT_MULT_DIV_ISSUE_WIDTH),
+        FP_ALU(count=FP_REG_ISSUE_WIDTH),
+        FP_MultDiv(count=FP_MULT_DIV_ISSUE_WIDTH),
+        ReadPort(count=READ_PORT_ISSUE_WIDTH),
+        RdWrPort(count=RDWR_PORT_ISSUE_WIDTH),
+        SIMD_Unit(count=SIMD_UNIT_ISSUE_WIDTH),
     ]
 
 
@@ -57,34 +77,24 @@ class MyOutOfOrderCore(BaseCPUCore):
         fetch_width,
         decode_width,
         rename_width,
-        issue_width,
         wb_width,
         commit_width,
         rob_size,
-        num_int_regs,
-        num_fp_regs,
         lq_entries,
         sq_entries,
         branch_predictor,
     ):
         super().__init__(X86O3CPU(), ISA.X86)
         # TODO: Convert all parameter settings to use Param notation
+        self.core.numROBEntries = rob_size
         self.core.fetchWidth = fetch_width
         self.core.decodeWidth = decode_width
         self.core.renameWidth = rename_width
-        self.core.issueWidth = issue_width  # not in concorde parameterization (split between alu, fp, l/s)
-        self.core.instQueues = IQUnit(fuPool=MyFUPool())
-        self.core.wbWidth = wb_width  # not in concorde parameterization
+        self.core.wbWidth = wb_width
         self.core.commitWidth = commit_width
 
-        self.core.numROBEntries = rob_size
-
-        self.core.numPhysIntRegs = (
-            num_int_regs  # not in concorde parameterization
-        )
-        self.core.numPhysFloatRegs = (
-            num_fp_regs  # not in concorde parameterization
-        )
+        self.core.issueWidth = ISSUE_WIDTH
+        self.core.instQueues = IQUnit(fuPool=MyFUPool())
 
         self.core.LQEntries = lq_entries
         self.core.SQEntries = sq_entries
@@ -98,12 +108,9 @@ class MyOutOfOrderProcessor(BaseCPUProcessor):
         fetch_width,
         decode_width,
         rename_width,
-        issue_width,
         wb_width,
         commit_width,
         rob_size,
-        num_int_regs,
-        num_fp_regs,
         lq_entries,
         sq_entries,
         branch_predictor,
@@ -113,12 +120,9 @@ class MyOutOfOrderProcessor(BaseCPUProcessor):
                 fetch_width,
                 decode_width,
                 rename_width,
-                issue_width,
                 wb_width,
                 commit_width,
                 rob_size,
-                num_int_regs,
-                num_fp_regs,
                 lq_entries,
                 sq_entries,
                 branch_predictor,
@@ -139,6 +143,7 @@ class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
         l2_size: str,
         l1d_assoc: int = 8,
         l1i_assoc: int = 8,
+        l1i_mshrs: int = 4,
         l2_assoc: int = 16,
         membus: Optional[BaseXBar] = None,
         PrefetcherCls: Optional[Type[BasePrefetcher]] = None,
@@ -147,6 +152,7 @@ class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
             l1d_size, l1i_size, l2_size, l1d_assoc, l1i_assoc, l2_assoc, membus
         )
         self._l1d_prefetcher_cls = PrefetcherCls
+        self._l1i_mshrs = l1i_mshrs
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -159,6 +165,7 @@ class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
                 size=self._l1i_size,
                 assoc=self._l1i_assoc,
                 writeback_clean=False,
+                mshrs=self._l1i_mshrs,
             )
             for _ in range(board.get_processor().get_num_cores())
         ]
@@ -194,7 +201,7 @@ class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
 
 
 class MyPrefetcher(StridePrefetcher):
-    def __init__(self, degree: int = 0):
+    def __init__(self, degree: int = 4):
         super().__init__()
         self.degree = degree
 
@@ -203,12 +210,9 @@ processor = MyOutOfOrderProcessor(
     fetch_width=8,
     decode_width=8,
     rename_width=8,
-    issue_width=8,
     wb_width=8,
     commit_width=8,
     rob_size=192,
-    num_int_regs=256,
-    num_fp_regs=256,
     lq_entries=128,
     sq_entries=128,
     branch_predictor=BranchPredictor(conditionalBranchPred=TAGE()),
@@ -222,6 +226,7 @@ cache_hierarchy = MyCacheHierarchy(
     l1d_assoc=8,
     l1i_assoc=8,
     l2_assoc=16,
+    l1i_mshrs=4,
     PrefetcherCls=MyPrefetcher,
 )
 
@@ -233,7 +238,7 @@ board = SimpleBoard(
 )
 
 binary = BinaryResource(
-    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/whetstone"
+    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/branch_storm"
 )
 board.set_se_binary_workload(binary)
 

@@ -1,19 +1,42 @@
+Peregrine Parameters
+[x] ROB size
+[x] Commit width
+[x] Writeback width
+[x] Load queue size
+[x] Store queue size
+[x] ALU regular issue width
+[x] ALU Mult/Div issue width
+[x] Floating-point regular issue width
+[x] Floating-point Mult/Div issue width
+[x] Load issue width
+[x] Load-store issue width
+[x] Fetch width
+[x] Decode width
+[x] Rename width
+[x] Maximum I-cache fills
+[x] Branch predictor
+[x] L1d cache size (kB)
+[x] L1i cache size (kB)
+[x] L2 cache size (kB)
+[x] L1d stride prefetcher degree
+
+Original Concorde Parameters:
 [x] ROB size
 [x] Commit width
 [x] Load queue size
 [x] Store queue size
-[?] ALU issue width                 (need to decide how to split ALU/MultDiv)
-[?] Floating-point issue width      (need to decide how to split ALU/MultDiv)
-[x] Load-store issue width
-[ ] Number of load-store pipes
-[ ] Number of load pipes
+[?] ALU issue width                 (need to decide how to split ALU/MultDiv, or combine as 1 unit)     - Keep seperate
+[?] Floating-point issue width      (^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^)
+[x] Load-store issue width                                                                              - Ignore
+[ ] Number of load-store pipes      (how/worth to modify considering load-store issue width)            - Use RWPort
+[ ] Number of load pipes            (^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ load       ^^^^^^^^^^^)            - Use R Port
 [x] Fetch width
 [x] Decode width
 [x] Rename width
-[ ] Number of fetch buffers
-[ ] Maximum I-cache fills
+[ ] Number of fetch buffers         (Use numFTQEntries, fetchBufferSize, maxFTPerCycle?)
+[x] Maximum I-cache fills           (^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^)    - Use MSHRs
 [x] Branch predictor
-[ ] Percent misprediction for Simple BP
+[ ] Percent misprediction for Simple BP     (Is this needed?) - just get rid of it
 [x] L1d cache size (kB)
 [x] L1i cache size (kB)
 [x] L2 cache size (kB)
