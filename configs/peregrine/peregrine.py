@@ -93,6 +93,7 @@ def parse_args():
             "whetstone",
         ],
     )
+    parser.add_argument("--outdir", type=str, default="m5out")
     return parser.parse_args()
 
 
@@ -304,5 +305,5 @@ binary = BinaryResource(
 )
 board.set_se_binary_workload(binary)
 
-simulator = Simulator(board=board)
+simulator = Simulator(board=board, outdir=f"{_args.outdir}")
 simulator.run()
