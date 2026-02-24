@@ -107,7 +107,6 @@ _issue_width = (
     + _args.rdwr_port_issue_width
     + _args.simd_unit_issue_width
 )
-assert _issue_width <= 16, "Issue width must be less than or equal to 16"
 
 
 # Custom FU pool with modified counts
