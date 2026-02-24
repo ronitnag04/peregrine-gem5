@@ -25,7 +25,6 @@ PARAM_VALUES = {
     "fetch_width": list(range(1, 12 + 1)),
     "decode_width": list(range(1, 12 + 1)),
     "rename_width": list(range(1, 12 + 1)),
-    "wb_width": list(range(1, 12 + 1)),
     "commit_width": list(range(1, 12 + 1)),
     "rob_size": list(range(1, 1024 + 1)),
     "lq_entries": list(range(1, 256 + 1)),
@@ -134,7 +133,7 @@ def main():
     total = total_combinations(PARAM_VALUES)
     n = min(args.num_combinations, total)
 
-    print(f"Total combinations: {total}. Sampling {n} random indices.")
+    print(f"Total combinations: {total:.2e}. Sampling {n} random indices.")
 
     # N distinct random indices in [0, total); safe for huge total (no range(total))
     random_indices = sample_random_indices(total, n)

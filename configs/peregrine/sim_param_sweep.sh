@@ -14,12 +14,14 @@ GEM5_ROOT="/home/ubuntu/peregrine-gem5"
 cd "$GEM5_ROOT"
 SWEEP_CSV="configs/peregrine/param_sweep.csv"
 OUT_BASE="$GEM5_ROOT/configs/peregrine/sweep_outputs"
+ERR_LOG_DIR="$GEM5_ROOT/configs/peregrine/sweep_errors"
+mkdir -p "$ERR_LOG_DIR"
 RESULTS_CSV="$GEM5_ROOT/configs/peregrine/sweep_results.csv"
 LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
 mkdir -p "$OUT_BASE"
 
 BENCHMARKS=(branch_storm collatz dhrystone linpack sieve sparse towers whetstone)
-export GEM5_ROOT SWEEP_CSV OUT_BASE RESULTS_CSV LOCK_FILE BENCHMARKS
+export GEM5_ROOT SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV LOCK_FILE BENCHMARKS
 
 run_one() {
   local line="$1"
@@ -46,14 +48,16 @@ run_one() {
   local simd_unit_issue_width="${F[19]}"
   local sq_entries="${F[20]}"
   local stride_prefetcher_degree="${F[21]}"
-  local wb_width="${F[22]}"
 
   local outdir="$OUT_BASE/m5out_${PARALLEL_SEQ:-$$}"
   mkdir -p "$outdir"
+  local log_file="$outdir/$bench-$bp-$commit_width-$decode_width-$fetch_width-$fp_mult_div_issue_width-$fp_reg_issue_width-$int_mult_div_issue_width-$int_reg_issue_width-$l1d_size-$l1i_size-$l2_size-$lq_entries-$max_icache_fills-$rdwr_port_issue_width-$read_port_issue_width-$rename_width-$rob_size-$simd_unit_issue_width-$sq_entries-$stride_prefetcher_degree.log"
 
+  # Run gem5, capturing exit status so we can decide whether to keep or delete the log.
+  set +e
   (
-    cd "$GEM5_ROOT"
-    ./build/X86/gem5.opt configs/peregrine/peregrine.py \
+    cd "$GEM5_ROOT" || exit 1
+    ./build/X86/gem5.opt --redirect-stdout --stdout-file="$log_file" configs/peregrine/peregrine.py \
       --branch-predictor "$bp" \
       --commit-width "$commit_width" \
       --decode-width "$decode_width" \
@@ -74,17 +78,29 @@ run_one() {
       --simd-unit-issue-width "$simd_unit_issue_width" \
       --sq-entries "$sq_entries" \
       --stride-prefetcher-degree "$stride_prefetcher_degree" \
-      --wb-width "$wb_width" \
       --benchmark "$bench" \
       --outdir "$outdir"
   )
+  local gem_status=$?
+  set -e
+
+  # Logfile handling:
+  # - If gem5 succeeded, delete the per-run log.
+  # - If gem5 failed, keep the log so the failure can be inspected.
+  if [[ $gem_status -eq 0 ]]; then
+    rm -f "$log_file"
+  else
+    local err_log_file="$ERR_LOG_DIR/$(basename "$log_file")"
+    mv "$log_file" "$err_log_file"
+    echo "gem5.opt failed (status $gem_status) for benchmark=$bench, row=$row; log saved at: $err_log_file" >&2
+  fi
 
   local cpi=""
-  if [[ -f "$outdir/stats.txt" ]]; then
+  # Only attempt to read and record CPI if the simulation completed successfully.
+  if [[ $gem_status -eq 0 && -f "$outdir/stats.txt" ]]; then
+    # Get the CPI from the stats.txt file, using seconds set of stats dump corresponding to m5_work region of interest
     cpi=$(awk '/board.processor.cores.core.cpi/ {count++; if (count==2) print $2}' "$outdir/stats.txt")
-  fi
-  if [[ -n "$cpi" ]]; then
-    local csv_row="${cpi},${bench},${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree},${wb_width}"
+    local csv_row="${cpi},${bench},${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
     (
       flock -x 9
       echo "$csv_row" >> "$RESULTS_CSV"
@@ -96,19 +112,25 @@ run_one() {
 }
 export -f run_one
 
-# Write CSV header (cpi first, then benchmark, param columns)
-echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree,wb_width" > "$RESULTS_CSV"
+# Write CSV header (cpi first, then benchmark, param columns; matches param_sweep.csv)
+echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
 touch "$LOCK_FILE"
 
-# Build job lines: row,benchmark,branch_predictor,commit_width,...,wb_width (23 fields)
-# Skip CSV header; number rows from 1. Run with 31 parallel jobs (leave 1 CPU for SSH/monitor).
-job_count=0
-while IFS= read -r csv_line; do
-  ((job_count++)) || true
-  for bench in "${BENCHMARKS[@]}"; do
-    echo "${job_count},${bench},${csv_line}"
+# Build job lines: row,benchmark,branch_predictor,commit_width,...,stride_prefetcher_degree (22 fields)
+# Explicitly read and discard exactly one header line, then stream all parameter lines.
+# Number rows from 1. Run with 31 parallel jobs (leave 1 CPU for SSH/monitor).
+{
+  # Read and discard header
+  IFS= read -r _header
+
+  job_count=0
+  while IFS= read -r csv_line; do
+    ((job_count++)) || true
+    for bench in "${BENCHMARKS[@]}"; do
+      echo "${job_count},${bench},${csv_line}"
+    done
   done
-done < <(tail -n +2 "$SWEEP_CSV") | parallel -j 31 --env run_one run_one
+} < "$SWEEP_CSV" | parallel -j 31 --env run_one run_one
 
 rm -rf "$OUT_BASE"
 rm "$LOCK_FILE"
