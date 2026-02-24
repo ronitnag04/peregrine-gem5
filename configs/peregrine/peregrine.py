@@ -1,3 +1,4 @@
+import argparse
 from typing import (
     Callable,
     Optional,
@@ -13,6 +14,7 @@ from m5.objects import (
     FUPool,
     IQUnit,
     L2XBar,
+    LocalBP,
     StridePrefetcher,
     TournamentBP,
 )
@@ -38,36 +40,86 @@ from gem5.resources.resource import BinaryResource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.override import overrides
 
-INT_REG_ISSUE_WIDTH = 2
-INT_MULT_DIV_ISSUE_WIDTH = 2
-FP_REG_ISSUE_WIDTH = 2
-FP_MULT_DIV_ISSUE_WIDTH = 2
-READ_PORT_ISSUE_WIDTH = 2
-RDWR_PORT_ISSUE_WIDTH = 2
-SIMD_UNIT_ISSUE_WIDTH = 4
-ISSUE_WIDTH = (
-    INT_REG_ISSUE_WIDTH
-    + INT_MULT_DIV_ISSUE_WIDTH
-    + FP_REG_ISSUE_WIDTH
-    + FP_MULT_DIV_ISSUE_WIDTH
-    + READ_PORT_ISSUE_WIDTH
-    + RDWR_PORT_ISSUE_WIDTH
-    + SIMD_UNIT_ISSUE_WIDTH
-)
 
-assert ISSUE_WIDTH <= 16, "Issue width must be less than or equal to 16"
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Peregrine gem5 O3 configuration",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    # Issue widths (functional units)
+    parser.add_argument("--int-reg-issue-width", type=int, default=2)
+    parser.add_argument("--int-mult-div-issue-width", type=int, default=2)
+    parser.add_argument("--fp-reg-issue-width", type=int, default=2)
+    parser.add_argument("--fp-mult-div-issue-width", type=int, default=2)
+    parser.add_argument("--read-port-issue-width", type=int, default=2)
+    parser.add_argument("--rdwr-port-issue-width", type=int, default=2)
+    parser.add_argument("--simd-unit-issue-width", type=int, default=1)
+    # O3 pipeline widths
+    parser.add_argument("--fetch-width", type=int, default=8)
+    parser.add_argument("--decode-width", type=int, default=8)
+    parser.add_argument("--rename-width", type=int, default=8)
+    parser.add_argument("--wb-width", type=int, default=8)
+    parser.add_argument("--commit-width", type=int, default=8)
+    # O3 queue sizes
+    parser.add_argument("--rob-size", type=int, default=192)
+    parser.add_argument("--lq-entries", type=int, default=32)
+    parser.add_argument("--sq-entries", type=int, default=32)
+    # Branch predictor
+    parser.add_argument(
+        "--branch-predictor",
+        type=str,
+        default="local",
+        choices=["local", "tage"],
+    )
+    # Cache sizes (e.g. "32KiB", "256KiB")
+    parser.add_argument("--l1d-size", type=str, default="32KiB")
+    parser.add_argument("--l1i-size", type=str, default="32KiB")
+    parser.add_argument("--l2-size", type=str, default="256KiB")
+    parser.add_argument("--max-icache-fills", type=int, default=4)
+    parser.add_argument("--stride-prefetcher-degree", type=int, default=4)
+    # Benchmark
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default="branch_storm",
+        choices=[
+            "branch_storm",
+            "collatz",
+            "dhrystone",
+            "linpack",
+            "sieve",
+            "sparse",
+            "towers",
+            "whetstone",
+        ],
+    )
+    return parser.parse_args()
+
+
+_args = parse_args()
+
+_issue_width = (
+    _args.int_reg_issue_width
+    + _args.int_mult_div_issue_width
+    + _args.fp_reg_issue_width
+    + _args.fp_mult_div_issue_width
+    + _args.read_port_issue_width
+    + _args.rdwr_port_issue_width
+    + _args.simd_unit_issue_width
+)
+assert _issue_width <= 16, "Issue width must be less than or equal to 16"
 
 
 # Custom FU pool with modified counts
 class MyFUPool(FUPool):
     FUList = [
-        IntALU(count=INT_REG_ISSUE_WIDTH),
-        IntMultDiv(count=INT_MULT_DIV_ISSUE_WIDTH),
-        FP_ALU(count=FP_REG_ISSUE_WIDTH),
-        FP_MultDiv(count=FP_MULT_DIV_ISSUE_WIDTH),
-        ReadPort(count=READ_PORT_ISSUE_WIDTH),
-        RdWrPort(count=RDWR_PORT_ISSUE_WIDTH),
-        SIMD_Unit(count=SIMD_UNIT_ISSUE_WIDTH),
+        IntALU(count=_args.int_reg_issue_width),
+        IntMultDiv(count=_args.int_mult_div_issue_width),
+        FP_ALU(count=_args.fp_reg_issue_width),
+        FP_MultDiv(count=_args.fp_mult_div_issue_width),
+        ReadPort(count=_args.read_port_issue_width),
+        RdWrPort(count=_args.rdwr_port_issue_width),
+        SIMD_Unit(count=_args.simd_unit_issue_width),
     ]
 
 
@@ -79,6 +131,7 @@ class MyOutOfOrderCore(BaseCPUCore):
         rename_width,
         wb_width,
         commit_width,
+        issue_width,
         rob_size,
         lq_entries,
         sq_entries,
@@ -93,7 +146,7 @@ class MyOutOfOrderCore(BaseCPUCore):
         self.core.wbWidth = wb_width
         self.core.commitWidth = commit_width
 
-        self.core.issueWidth = ISSUE_WIDTH
+        self.core.issueWidth = issue_width
         self.core.instQueues = IQUnit(fuPool=MyFUPool())
 
         self.core.LQEntries = lq_entries
@@ -110,6 +163,7 @@ class MyOutOfOrderProcessor(BaseCPUProcessor):
         rename_width,
         wb_width,
         commit_width,
+        issue_width,
         rob_size,
         lq_entries,
         sq_entries,
@@ -122,6 +176,7 @@ class MyOutOfOrderProcessor(BaseCPUProcessor):
                 rename_width,
                 wb_width,
                 commit_width,
+                issue_width,
                 rob_size,
                 lq_entries,
                 sq_entries,
@@ -201,32 +256,40 @@ class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
 
 
 class MyPrefetcher(StridePrefetcher):
-    def __init__(self, degree: int = 4):
+    def __init__(self, degree: int = _args.stride_prefetcher_degree):
         super().__init__()
         self.degree = degree
 
 
+if _args.branch_predictor == "local":
+    branch_predictor = BranchPredictor(conditionalBranchPred=LocalBP())
+elif _args.branch_predictor == "tage":
+    branch_predictor = BranchPredictor(conditionalBranchPred=TAGE())
+else:
+    raise ValueError(f"Invalid branch predictor: {_args.branch_predictor}")
+
 processor = MyOutOfOrderProcessor(
-    fetch_width=8,
-    decode_width=8,
-    rename_width=8,
-    wb_width=8,
-    commit_width=8,
-    rob_size=192,
-    lq_entries=128,
-    sq_entries=128,
-    branch_predictor=BranchPredictor(conditionalBranchPred=TAGE()),
+    fetch_width=_args.fetch_width,
+    decode_width=_args.decode_width,
+    rename_width=_args.rename_width,
+    wb_width=_args.wb_width,
+    commit_width=_args.commit_width,
+    issue_width=_issue_width,
+    rob_size=_args.rob_size,
+    lq_entries=_args.lq_entries,
+    sq_entries=_args.sq_entries,
+    branch_predictor=branch_predictor,
 )
 
 main_memory = SingleChannelDDR4_2400(size="4GiB")
 cache_hierarchy = MyCacheHierarchy(
-    l1d_size="32KiB",
-    l1i_size="32KiB",
-    l2_size="1MiB",
+    l1d_size=_args.l1d_size,
+    l1i_size=_args.l1i_size,
+    l2_size=_args.l2_size,
     l1d_assoc=8,
     l1i_assoc=8,
     l2_assoc=16,
-    l1i_mshrs=4,
+    l1i_mshrs=_args.max_icache_fills,
     PrefetcherCls=MyPrefetcher,
 )
 
@@ -238,7 +301,7 @@ board = SimpleBoard(
 )
 
 binary = BinaryResource(
-    local_path="/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/branch_storm"
+    local_path=f"/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/{_args.benchmark}-gem5"
 )
 board.set_se_binary_workload(binary)
 
