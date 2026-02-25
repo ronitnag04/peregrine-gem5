@@ -133,6 +133,10 @@ touch "$LOCK_FILE"
 } < "$SWEEP_CSV" | parallel -j 31 --env run_one run_one
 
 rm -rf "$OUT_BASE"
+if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
+  rmdir "$ERR_LOG_DIR"
+fi
+
 rm "$LOCK_FILE"
 
 echo "Sweep finished. Results in $RESULTS_CSV"
