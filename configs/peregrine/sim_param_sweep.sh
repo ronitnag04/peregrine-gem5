@@ -130,7 +130,7 @@ touch "$LOCK_FILE"
       echo "${job_count},${bench},${csv_line}"
     done
   done
-} < "$SWEEP_CSV" | parallel -j 31 --env run_one run_one
+} < "$SWEEP_CSV" | parallel -j $(nproc) --env run_one run_one
 
 rm -rf "$OUT_BASE"
 if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
