@@ -12,6 +12,7 @@ from m5.objects import (
     BaseXBar,
     BranchPredictor,
     FUPool,
+    InstructionTracer,
     IQUnit,
     L2XBar,
     LocalBP,
@@ -93,6 +94,9 @@ def parse_args():
             "whetstone",
         ],
     )
+    # Tracing
+    parser.add_argument("--trace", action="store_true", default=False)
+    # Output directory
     parser.add_argument("--outdir", type=str, default="m5out")
     return parser.parse_args()
 
@@ -281,6 +285,15 @@ processor = MyOutOfOrderProcessor(
     branch_predictor=branch_predictor,
 )
 
+if _args.trace:
+    cpu_core = processor.get_cores()[0]
+    actual_cpu = cpu_core.get_simobject()
+    tracer = InstructionTracer(
+        manager=actual_cpu,
+        output_file="trace.csv",
+    )
+    actual_cpu.instruction_tracer = tracer
+
 main_memory = SingleChannelDDR4_2400(size="4GiB")
 cache_hierarchy = MyCacheHierarchy(
     l1d_size=_args.l1d_size,
@@ -301,7 +314,7 @@ board = SimpleBoard(
 )
 
 binary = BinaryResource(
-    local_path=f"/home/ubuntu/peregrine-gem5/tests/peregrine-bmarks/{_args.benchmark}-gem5"
+    local_path=f"tests/peregrine-bmarks/{_args.benchmark}-gem5"
 )
 board.set_se_binary_workload(binary)
 
