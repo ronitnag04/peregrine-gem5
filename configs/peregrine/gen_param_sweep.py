@@ -37,6 +37,29 @@ PARAM_VALUES = {
     "stride_prefetcher_degree": [0, 4],
 }
 
+DEFAULT_PARAM_VALUES = {
+    "int_reg_issue_width": 2,
+    "int_mult_div_issue_width": 2,
+    "fp_reg_issue_width": 2,
+    "fp_mult_div_issue_width": 2,
+    "read_port_issue_width": 2,
+    "rdwr_port_issue_width": 2,
+    "simd_unit_issue_width": 1,
+    "fetch_width": 8,
+    "decode_width": 8,
+    "rename_width": 8,
+    "commit_width": 8,
+    "rob_size": 192,
+    "lq_entries": 32,
+    "sq_entries": 32,
+    "branch_predictor": "local",
+    "l1d_size": "32KiB",
+    "l1i_size": "32KiB",
+    "l2_size": "256KiB",
+    "max_icache_fills": 4,
+    "stride_prefetcher_degree": 4,
+}
+
 # Fixed order: same as itertools.product(*value_lists), last varies fastest
 PARAM_KEYS = sorted(PARAM_VALUES.keys())
 
@@ -107,13 +130,6 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "-n",
-        "--num-combinations",
-        type=int,
-        default=2**14,
-        help="Number of combination indices to sample. Capped at total combinations.",
-    )
-    parser.add_argument(
         "-o",
         "--output",
         type=str,
@@ -121,28 +137,66 @@ def main():
         help="Output CSV path",
     )
     parser.add_argument(
+        "-t",
+        "--sweep-type",
+        type=str,
+        default="random",
+        choices=["random", "ofat"],
+        help=(
+            "Type of sweep to generate: 'random' for random sampling, "
+            "'ofat' for one-factor-at-a-time."
+        ),
+    )
+    parser.add_argument(
+        "-n",
+        "--num-combinations",
+        type=int,
+        default=2**14,
+        help=(
+            "Number of combination indices to sample for random sweeps. "
+            "Ignored when --sweep-type=ofat."
+        ),
+    )
+    parser.add_argument(
+        "-s",
         "--seed",
         type=int,
         default=262,
-        help="Random seed for reproducibility",
+        help=(
+            "Random seed for reproducibility in random sweeps. "
+            "Ignored when --sweep-type=ofat."
+        ),
     )
     args = parser.parse_args()
 
-    random.seed(args.seed)
+    if args.sweep_type == "random":
+        random.seed(args.seed)
+        total = total_combinations(PARAM_VALUES)
+        n = min(args.num_combinations, total)
 
-    total = total_combinations(PARAM_VALUES)
-    n = min(args.num_combinations, total)
+        print(f"Total combinations: {total:.2e}. Sampling {n} random indices.")
 
-    print(f"Total combinations: {total:.2e}. Sampling {n} random indices.")
-
-    # N distinct random indices in [0, total); safe for huge total (no range(total))
-    random_indices = sample_random_indices(total, n)
-    # Precompute strides once for decoding (avoids repeated big-int work for huge total)
-    sizes, strides = _compute_strides(PARAM_VALUES)
-    combinations = [
-        index_to_combination(k, PARAM_VALUES, sizes=sizes, strides=strides)
-        for k in random_indices
-    ]
+        # N distinct random indices in [0, total); safe for huge total (no range(total))
+        random_indices = sample_random_indices(total, n)
+        # Precompute strides once for decoding (avoids repeated big-int work for huge total)
+        sizes, strides = _compute_strides(PARAM_VALUES)
+        combinations = [
+            index_to_combination(k, PARAM_VALUES, sizes=sizes, strides=strides)
+            for k in random_indices
+        ]
+    elif args.sweep_type == "ofat":
+        combinations = []
+        for key in PARAM_KEYS:
+            defaulted = dict(DEFAULT_PARAM_VALUES)
+            for value in PARAM_VALUES[key]:
+                combo = dict(defaulted)
+                combo[key] = value
+                combinations.append(combo)
+        print(
+            f"OFAT sweep over {len(PARAM_KEYS)} parameters, "
+            f"{len(combinations)} total combinations. "
+            "Arguments --num-combinations and --seed are ignored for OFAT sweeps."
+        )
 
     # One row per combination
     df = pd.DataFrame(combinations)
