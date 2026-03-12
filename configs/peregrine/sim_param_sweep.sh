@@ -12,11 +12,11 @@ if ! command -v parallel &>/dev/null; then
 fi
 GEM5_ROOT="/home/ubuntu/peregrine-gem5"
 cd "$GEM5_ROOT"
-SWEEP_CSV="configs/peregrine/param_sweep.csv"
+SWEEP_CSV="${SWEEP_CSV:-configs/peregrine/param_sweep.csv}"
 OUT_BASE="$GEM5_ROOT/configs/peregrine/sweep_outputs"
 ERR_LOG_DIR="$GEM5_ROOT/configs/peregrine/sweep_errors"
 mkdir -p "$ERR_LOG_DIR"
-RESULTS_CSV="$GEM5_ROOT/configs/peregrine/sweep_results.csv"
+RESULTS_CSV="${RESULTS_CSV:-$GEM5_ROOT/configs/peregrine/sweep_results.csv}"
 LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
 mkdir -p "$OUT_BASE"
 
