@@ -86,6 +86,12 @@ def parse_args():
     parser.add_argument("--stride-prefetcher-degree", type=int, default=4)
     # Benchmark
     parser.add_argument(
+        "--specdir",
+        type=str,
+        default="/home/ubuntu/SPEC2017-1-1-9",
+        help="Directory containing built SPEC2017 benchmarks using the peregrine.cfg",
+    )
+    parser.add_argument(
         "--benchmark",
         type=str,
         default="branch_storm",
@@ -105,7 +111,7 @@ def parse_args():
             "548.exchange2_r",
             "531.deepsjeng_r",
             "557.xz_r",
-            # "500.perlbench_r",
+            # "500.perlbench_r",    # TODO: not compatible, may require FS mode to handle clock_nanosleep syscall
             "525.x264_r",
             "502.gcc_r",
         ],
@@ -363,37 +369,22 @@ peregrine_benchmarks = [
 ]
 
 
-def file_arg(benchmark_name, filename):
-    return f"tests/peregrine-spec/{benchmark_name}/{filename}"
-
-
 spec_benchmarks = {
     "505.mcf_r": {
         "binary": "mcf_r_base.peregrine-m64",
-        "arguments": [file_arg("505.mcf_r", "inp.in")],
+        "arguments": ["inp.in"],
     },
     "520.omnetpp_r": {
         "binary": "omnetpp_r_base.peregrine-m64",
-        "arguments": [
-            "-f",
-            file_arg("520.omnetpp_r", "omnetpp.ini"),
-            "-c",
-            "General",
-            "-r",
-            "0",
-        ],
+        "arguments": ["-f", "omnetpp.ini", "-c", "General", "-r", "0"],
     },
     "523.xalancbmk_r": {
         "binary": "cpuxalan_r_base.peregrine-m64",
-        "arguments": [
-            "-v",
-            file_arg("523.xalancbmk_r", "test.xml"),
-            file_arg("523.xalancbmk_r", "xalanc.xsl"),
-        ],
+        "arguments": ["-v", "test.xml", "xalanc.xsl"],
     },
     "541.leela_r": {
         "binary": "leela_r_base.peregrine-m64",
-        "arguments": [file_arg("541.leela_r", "test.sgf")],
+        "arguments": ["test.sgf"],
     },
     "548.exchange2_r": {
         "binary": "exchange2_r_base.peregrine-m64",
@@ -401,12 +392,12 @@ spec_benchmarks = {
     },
     "531.deepsjeng_r": {
         "binary": "deepsjeng_r_base.peregrine-m64",
-        "arguments": [file_arg("531.deepsjeng_r", "test.txt")],
+        "arguments": ["test.txt"],
     },
     "557.xz_r": {
         "binary": "xz_r_base.peregrine-m64",
         "arguments": [
-            file_arg("557.xz_r", "cpu2006docs.tar.xz"),
+            "cpu2006docs.tar.xz",
             "4",
             "055ce243071129412e9dd0b3b69a21654033a9b723d874b2015c774fac1553d9"
             "713be561ca86f74e4f16f22e664fc17a79f30caa5ad2c04fbc447549c2810fae",
@@ -414,10 +405,10 @@ spec_benchmarks = {
             "1555348" "0",
         ],
     },
-    # TODO: perlbench not working outside of directory
-    # "500.perlbench_r": {
-    #     "binary": "perlbench_r_base.peregrine-m64",
-    #     "arguments": [file_arg("500.perlbench_r", "test.pl")]},
+    "500.perlbench_r": {
+        "binary": "perlbench_r_base.peregrine-m64",
+        "arguments": ["test.pl"],
+    },
     "525.x264_r": {
         "binary": "x264_r_base.peregrine-m64",
         "arguments": [
@@ -426,22 +417,24 @@ spec_benchmarks = {
             "--frames",
             "156",
             "-o",
-            file_arg("525.x264_r", "BuckBunny_New.264"),
-            file_arg("525.x264_r", "BuckBunny.yuv"),
+            "BuckBunny_New.264",
+            "BuckBunny.yuv",
             "1280x720",
         ],
     },
     "502.gcc_r": {
         "binary": "cpugcc_r_base.peregrine-m64",
         "arguments": [
-            file_arg("502.gcc_r", "t1.c"),
+            "t1.c",
             "-O3",
             "finline-limit=50000",
             "-o",
-            file_arg("502.gcc_r", "t1.opts-O3_-finline-limit_50000.s"),
+            "t1.opts-O3_-finline-limit_50000.s",
         ],
     },
 }
+
+spec_cwd: Optional[str] = None
 
 if _args.benchmark in peregrine_benchmarks:
     binary = BinaryResource(
@@ -449,11 +442,11 @@ if _args.benchmark in peregrine_benchmarks:
     )
     arguments = []
 elif _args.benchmark in spec_benchmarks:
+    rundir = f"{_args.specdir}/benchspec/CPU/{_args.benchmark}/run/run_base_test_peregrine-m64.0000"
+    spec_cwd = rundir
     binary = spec_benchmarks[_args.benchmark]["binary"]
     arguments = spec_benchmarks[_args.benchmark]["arguments"]
-    binary = BinaryResource(
-        local_path=f"tests/peregrine-spec/{_args.benchmark}/{binary}"
-    )
+    binary = BinaryResource(local_path=f"{rundir}/{binary}")
 else:
     raise ValueError(f"Invalid benchmark: {_args.benchmark}")
 
@@ -463,6 +456,18 @@ board.set_se_binary_workload(
     stdout_file=Path("stdout.txt"),
     stderr_file=Path("stderr.txt"),
 )
+
+if spec_cwd is not None:
+    sim_processor = board.get_processor()
+    cores = (
+        sim_processor._all_cores()
+        if isinstance(sim_processor, SwitchableProcessor)
+        else sim_processor.get_cores()
+    )
+    for core in cores:
+        cpu_simobj = core.get_simobject()
+        for process in cpu_simobj.workload:
+            process.cwd = spec_cwd
 
 if _args.fast_forward:
 
