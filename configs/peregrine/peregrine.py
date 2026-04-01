@@ -117,12 +117,23 @@ def parse_args():
         ],
     )
     # Execution behavior
+    parser.add_argument(
+        "--fast-only",
+        action="store_true",
+        default=False,
+        help="Use only AtomicSimpleCPU for execution, skip O3 core",
+    )
     parser.add_argument("--trace", action="store_true", default=False)
     parser.add_argument("--max-insts", type=int)
     parser.add_argument("--fast-forward", type=int)
     # Output directory
     parser.add_argument("--outdir", type=str, default="m5out")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.fast_only and args.fast_forward is not None:
+        parser.error("--fast-only cannot be used with --fast-forward")
+
+    return args
 
 
 _args = parse_args()
@@ -192,6 +203,11 @@ class AtomicCore(BaseCPUCore):
 class MyOutOfOrderProcessor(BaseCPUProcessor):
     def __init__(self, core: MyOutOfOrderCore):
         super().__init__([core])
+
+
+class AtomicProcessor(BaseCPUProcessor):
+    def __init__(self, core_id: int = 0):
+        super().__init__([AtomicCore(core_id=core_id)])
 
 
 class FastForwardToO3Processor(SwitchableProcessor):
@@ -316,27 +332,30 @@ detailed_core = MyOutOfOrderCore(
     core_id=0,
 )
 
-if _args.fast_forward:
+if _args.fast_only:
+    processor = AtomicProcessor(core_id=0)
+    sim_cpu = processor.get_cores()[0].get_simobject()
+elif _args.fast_forward:
     processor = FastForwardToO3Processor(
         detailed_core=detailed_core, core_id=0
     )
     ff_cpu = processor.fast_forward[0].get_simobject()
     ff_cpu.max_insts_any_thread = _args.fast_forward
-    detailed_cpu = detailed_core.get_simobject()
+    sim_cpu = detailed_core.get_simobject()
 else:
     processor = MyOutOfOrderProcessor(core=detailed_core)
-    detailed_cpu = processor.get_cores()[0].get_simobject()
+    sim_cpu = processor.get_cores()[0].get_simobject()
 
 if _args.trace:
     tracer = InstructionTracer(
-        manager=detailed_cpu,
+        manager=sim_cpu,
         output_file="trace.csv",
     )
-    detailed_cpu.instruction_tracer = tracer
+    sim_cpu.instruction_tracer = tracer
 
 if _args.max_insts:
-    print(f"Setting max instructions of detailed CPU to {_args.max_insts}")
-    detailed_cpu.max_insts_any_thread = _args.max_insts
+    print(f"Setting max instructions of active CPU to {_args.max_insts}")
+    sim_cpu.max_insts_any_thread = _args.max_insts
 
 main_memory = SingleChannelDDR4_2400(size="4GiB")
 cache_hierarchy = MyCacheHierarchy(
@@ -469,7 +488,7 @@ if spec_cwd is not None:
         for process in cpu_simobj.workload:
             process.cwd = spec_cwd
 
-if _args.fast_forward:
+if _args.fast_forward and not _args.fast_only:
 
     def _switch_after_fast_forward():
         print(
