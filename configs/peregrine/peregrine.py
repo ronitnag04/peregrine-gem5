@@ -427,7 +427,7 @@ spec_benchmarks = {
         "arguments": [
             "t1.c",
             "-O3",
-            "finline-limit=50000",
+            "-finline-limit=50000",
             "-o",
             "t1.opts-O3_-finline-limit_50000.s",
         ],
