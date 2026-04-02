@@ -8,10 +8,20 @@ To use the SPEC2017 benchmarks, you must setup SPEC2017 externally. Follow the [
 ### Add the SPEC Peregrine Config
 Add the `peregrine.cfg` (found in the [peregrine](https://github.com/chriswaligorski/peregrine/) repo) to build the benchmarks. Place it in the `config/` directory.
 
+You can also add the `peregrine-nostrict` config file, which sets `strict_rundir_verify = 0`. This prevents SPEC from erroring when there are changes to the source files (which is often done for debugging).
+
 ### Generate the benchmark run directories
 
 ```bash
 cd SPEC2017-1-1-9
 source shrc
 runcpu --config=peregrine --action=runsetup --size=test 505.mcf_r 520.omnetpp_r 523.xalancbmk_r 541.leela_r 548.exchange2_r 531.deepsjeng_r 557.xz_r 500.perlbench_r 525.x264_r 502.gcc_r
+```
+
+If you change the source code and need to regenerate the executable files and run directories:
+```bash
+cd SPEC2017-1-1-9
+source shrc
+runcpu --config=peregrine-nostrict --action=clobber --size=test <benchmark>
+runcpu --config=peregrine-nostrict --action=runsetup --size=test <benchmark>
 ```
