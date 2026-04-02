@@ -126,6 +126,15 @@ def parse_args():
     parser.add_argument("--trace", action="store_true", default=False)
     parser.add_argument("--max-insts", type=int)
     parser.add_argument("--fast-forward", type=int)
+    parser.add_argument(
+        "--progress-interval",
+        type=str,
+        default=None,
+        help=(
+            "Enable periodic CPU progress messages (gem5 Param.Frequency, e.g. 1000). "
+            "If omitted, progress_interval is not set (default CPU behavior, typically off)."
+        ),
+    )
     # Output directory
     parser.add_argument("--outdir", type=str, default="m5out")
     args = parser.parse_args()
@@ -341,6 +350,8 @@ elif _args.fast_forward:
     )
     ff_cpu = processor.fast_forward[0].get_simobject()
     ff_cpu.max_insts_any_thread = _args.fast_forward
+    if _args.progress_interval is not None:
+        ff_cpu.progress_interval = _args.progress_interval
     sim_cpu = detailed_core.get_simobject()
 else:
     processor = MyOutOfOrderProcessor(core=detailed_core)
@@ -356,6 +367,9 @@ if _args.trace:
 if _args.max_insts:
     print(f"Setting max instructions of active CPU to {_args.max_insts}")
     sim_cpu.max_insts_any_thread = _args.max_insts
+
+if _args.progress_interval is not None:
+    sim_cpu.progress_interval = _args.progress_interval
 
 main_memory = SingleChannelDDR4_2400(size="4GiB")
 cache_hierarchy = MyCacheHierarchy(
