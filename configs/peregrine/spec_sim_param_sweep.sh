@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Run gem5 peregrine param sweep: one job per (CSV row, benchmark).
+# Restores the checkpoint from spec_checkpoint_benchmarks.sh (same fast-forward point as
+# spec_trace_benchmarks.sh), then runs detailed O3 with the sweep parameters.
+# Uses GNU parallel. Results append to a single CSV with locking.
+#
+# Memory: each gem5 restore can use a lot of RSS. Running -j $(nproc) without limits
+# often triggers the OOM killer (exit 137). This script uses GNU parallel's
+# --memsuspend so new jobs wait and running jobs are suspended when RAM is tight,
+# then resumed when space is available (see SWEEP_MEMSUSPEND).
+#
+# Requires: GNU parallel (apt install parallel); checkpoints under CHECKPOINT_DIR
+# Run from repo root or any dir; script cd's to peregrine-gem5.
+
+set -e
+if ! command -v parallel &>/dev/null; then
+  echo "GNU parallel is required. Install with: apt install parallel"
+  exit 1
+fi
+GEM5_ROOT="${GEM5_ROOT:-/home/ubuntu/peregrine-gem5}"
+GEM5_BIN="${GEM5_BIN:-$GEM5_ROOT/build/X86/gem5.opt}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-$GEM5_ROOT/configs/peregrine/checkpoints}"
+cd "$GEM5_ROOT"
+
+if [[ ! -x "$GEM5_BIN" ]]; then
+  echo "gem5 binary not found or not executable: $GEM5_BIN" >&2
+  echo "Build it first, e.g.: scons build/X86/gem5.opt -j \$(nproc)" >&2
+  exit 1
+fi
+SWEEP_CSV="${SWEEP_CSV:-configs/peregrine/param_sweep.csv}"
+OUT_BASE="$GEM5_ROOT/configs/peregrine/sweep_outputs"
+ERR_LOG_DIR="$GEM5_ROOT/configs/peregrine/sweep_errors"
+mkdir -p "$ERR_LOG_DIR"
+RESULTS_CSV="${RESULTS_CSV:-$GEM5_ROOT/configs/peregrine/sweep_results.csv}"
+LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
+mkdir -p "$OUT_BASE"
+
+# Max concurrent jobs (upper bound); actual concurrency is also limited by --memsuspend.
+SWEEP_JOBS="${SWEEP_JOBS:-$(nproc)}"
+# Peak RAM one gem5 job is expected to need (set high enough to avoid OOM; lower if your
+# machine is small—parallel will run fewer jobs concurrently). Disable throttling: SWEEP_MEMSUSPEND=0
+SWEEP_MEMSUSPEND="${SWEEP_MEMSUSPEND:-4G}"
+
+BENCHMARKS=("505.mcf_r") # "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exchange2_r" "531.deepsjeng_r" "557.xz_r" "525.x264_r" "502.gcc_r") # "500.perlbench_r"
+export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV LOCK_FILE BENCHMARKS
+
+run_one() {
+  local line="$1"
+  IFS=',' read -ra F <<< "$line"
+  local row="${F[0]}"
+  local bench="${F[1]}"
+  local bp="${F[2]}"
+  local commit_width="${F[3]}"
+  local decode_width="${F[4]}"
+  local fetch_width="${F[5]}"
+  local fp_mult_div_issue_width="${F[6]}"
+  local fp_reg_issue_width="${F[7]}"
+  local int_mult_div_issue_width="${F[8]}"
+  local int_reg_issue_width="${F[9]}"
+  local l1d_size="${F[10]}"
+  local l1i_size="${F[11]}"
+  local l2_size="${F[12]}"
+  local lq_entries="${F[13]}"
+  local max_icache_fills="${F[14]}"
+  local rdwr_port_issue_width="${F[15]}"
+  local read_port_issue_width="${F[16]}"
+  local rename_width="${F[17]}"
+  local rob_size="${F[18]}"
+  local simd_unit_issue_width="${F[19]}"
+  local sq_entries="${F[20]}"
+  local stride_prefetcher_degree="${F[21]}"
+
+  local checkpoint_dir="$CHECKPOINT_DIR/${bench}"
+  local cpt_file="$checkpoint_dir/m5.cpt"
+  local pmem_file="$checkpoint_dir/board.physmem.store0.pmem"
+  if [[ ! -d "$checkpoint_dir" ]]; then
+    echo "Checkpoint directory not found: $checkpoint_dir" >&2
+    echo "Run configs/peregrine/spec_checkpoint_benchmarks.sh first." >&2
+    return 1
+  fi
+  if [[ ! -f "$cpt_file" ]]; then
+    echo "Checkpoint file not found: $cpt_file" >&2
+    return 1
+  fi
+  if [[ ! -f "$pmem_file" ]]; then
+    echo "Physical memory file not found: $pmem_file" >&2
+    return 1
+  fi
+
+  local outdir="$OUT_BASE/m5out_${PARALLEL_SEQ:-$$}"
+  mkdir -p "$outdir"
+  local log_file="$outdir/$bench-$bp-$commit_width-$decode_width-$fetch_width-$fp_mult_div_issue_width-$fp_reg_issue_width-$int_mult_div_issue_width-$int_reg_issue_width-$l1d_size-$l1i_size-$l2_size-$lq_entries-$max_icache_fills-$rdwr_port_issue_width-$read_port_issue_width-$rename_width-$rob_size-$simd_unit_issue_width-$sq_entries-$stride_prefetcher_degree.log"
+
+  # Run gem5, capturing exit status so we can decide whether to keep or delete the log.
+  set +e
+  (
+    cd "$GEM5_ROOT" || exit 1
+    "$GEM5_BIN" --redirect-stdout --stdout-file="$log_file" configs/peregrine/peregrine.py \
+      --max-insts 1000000 \
+      --restore-checkpoint \
+      --checkpoint-dir "$checkpoint_dir" \
+      --branch-predictor "$bp" \
+      --commit-width "$commit_width" \
+      --decode-width "$decode_width" \
+      --fetch-width "$fetch_width" \
+      --fp-mult-div-issue-width "$fp_mult_div_issue_width" \
+      --fp-reg-issue-width "$fp_reg_issue_width" \
+      --int-mult-div-issue-width "$int_mult_div_issue_width" \
+      --int-reg-issue-width "$int_reg_issue_width" \
+      --l1d-size "$l1d_size" \
+      --l1i-size "$l1i_size" \
+      --l2-size "$l2_size" \
+      --lq-entries "$lq_entries" \
+      --max-icache-fills "$max_icache_fills" \
+      --rdwr-port-issue-width "$rdwr_port_issue_width" \
+      --read-port-issue-width "$read_port_issue_width" \
+      --rename-width "$rename_width" \
+      --rob-size "$rob_size" \
+      --simd-unit-issue-width "$simd_unit_issue_width" \
+      --sq-entries "$sq_entries" \
+      --stride-prefetcher-degree "$stride_prefetcher_degree" \
+      --benchmark "$bench" \
+      --outdir "$outdir"
+  )
+  local gem_status=$?
+  set -e
+
+  # Logfile handling:
+  # - If gem5 succeeded, delete the per-run log.
+  # - If gem5 failed, keep the log so the failure can be inspected.
+  if [[ $gem_status -eq 0 ]]; then
+    rm -f "$log_file"
+  else
+    local err_log_file="$ERR_LOG_DIR/$(basename "$log_file")"
+    mv "$log_file" "$err_log_file"
+    echo "gem5.opt failed (status $gem_status) for benchmark=$bench, row=$row; log saved at: $err_log_file" >&2
+  fi
+
+  local cpi=""
+  # Only attempt to read and record CPI if the simulation completed successfully.
+  if [[ $gem_status -eq 0 && -f "$outdir/stats.txt" ]]; then
+    # Get the CPI from the stats.txt file, using seconds set of stats dump corresponding to m5_work region of interest
+    cpi=$(awk '/board.processor.detailed.core.cpi/ {print $2}' "$outdir/stats.txt")
+    local csv_row="${cpi},${bench},${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
+    (
+      flock -x 9
+      echo "$csv_row" >> "$RESULTS_CSV"
+    ) 9>>"$LOCK_FILE"
+  fi
+  if [[ -d "$outdir" && "$outdir" == *"/m5out_"* ]]; then
+    rm -rf "$outdir"
+  fi
+}
+export -f run_one
+
+# Write CSV header (cpi first, then benchmark, param columns; matches param_sweep.csv)
+echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
+touch "$LOCK_FILE"
+
+# Build job lines: row,benchmark,branch_predictor,commit_width,...,stride_prefetcher_degree (22 fields)
+# Explicitly read and discard exactly one header line, then stream all parameter lines.
+# Number rows from 1. Parallelism: SWEEP_JOBS max workers; --memsuspend limits starts
+# when free RAM is low (suspends/resumes jobs instead of spawning until OOM).
+{
+  # Read and discard header
+  IFS= read -r _header
+
+  job_count=0
+  while IFS= read -r csv_line; do
+    ((job_count++)) || true
+    for bench in "${BENCHMARKS[@]}"; do
+      echo "${job_count},${bench},${csv_line}"
+    done
+  done
+} < "$SWEEP_CSV" | {
+  if [[ -n "$SWEEP_MEMSUSPEND" && "$SWEEP_MEMSUSPEND" != "0" ]]; then
+    echo "Parallel: -j ${SWEEP_JOBS} --memsuspend ${SWEEP_MEMSUSPEND} (set SWEEP_MEMSUSPEND=0 to disable)" >&2
+    parallel -j "$SWEEP_JOBS" --memsuspend "$SWEEP_MEMSUSPEND" \
+      --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env SWEEP_CSV --env OUT_BASE \
+      --env ERR_LOG_DIR --env RESULTS_CSV --env LOCK_FILE --env BENCHMARKS --env run_one \
+      run_one
+  else
+    echo "Parallel: -j ${SWEEP_JOBS} (memory suspend disabled)" >&2
+    parallel -j "$SWEEP_JOBS" \
+      --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env SWEEP_CSV --env OUT_BASE \
+      --env ERR_LOG_DIR --env RESULTS_CSV --env LOCK_FILE --env BENCHMARKS --env run_one \
+      run_one
+  fi
+}
+
+rm -rf "$OUT_BASE"
+if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
+  rmdir "$ERR_LOG_DIR"
+fi
+
+rm "$LOCK_FILE"
+
+echo "Sweep finished. Results in $RESULTS_CSV"

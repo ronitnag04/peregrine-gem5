@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 Generate a parameter sweep CSV for peregrine.py.
-Computes total combinations (product of all param value list sizes), samples N
-random indices in [0, total), and decodes each index to a parameter combo via
-mixed-radix (product order: last key varies fastest). One row per combination.
-Supports arbitrarily large total (e.g. > 10^20): no range(total) or product iteration;
-sampling uses randrange and index decoding uses O(num_params) integer arithmetic.
+
+Sweep types:
+- random: sample N distinct combinations via mixed-radix index decode (huge space safe).
+- ofat: one-factor-at-a-time over every value in PARAM_VALUES for that factor.
+- default: a single row matching DEFAULT_PARAM_VALUES.
+- tweak: one row per parameter; all values at default except that parameter, set to the
+  first value in PARAM_VALUES[key] that differs from the default (keys with no alternative
+  are skipped).
 """
 
 import argparse
@@ -62,6 +65,15 @@ DEFAULT_PARAM_VALUES = {
 
 # Fixed order: same as itertools.product(*value_lists), last varies fastest
 PARAM_KEYS = sorted(PARAM_VALUES.keys())
+
+
+def first_non_default_value(key):
+    """First entry in PARAM_VALUES[key] that differs from DEFAULT_PARAM_VALUES[key], or None."""
+    d = DEFAULT_PARAM_VALUES[key]
+    for v in PARAM_VALUES[key]:
+        if v != d:
+            return v
+    return None
 
 
 def total_combinations(param_values):
@@ -141,10 +153,10 @@ def main():
         "--sweep-type",
         type=str,
         default="random",
-        choices=["random", "ofat"],
+        choices=["random", "ofat", "default", "tweak"],
         help=(
-            "Type of sweep to generate: 'random' for random sampling, "
-            "'ofat' for one-factor-at-a-time."
+            "random: sample N combos; ofat: every value of each param alone (many rows); "
+            "default: one row of defaults; tweak: one row per param, only that param off-default."
         ),
     )
     parser.add_argument(
@@ -153,8 +165,8 @@ def main():
         type=int,
         default=2**14,
         help=(
-            "Number of combination indices to sample for random sweeps. "
-            "Ignored when --sweep-type=ofat."
+            "Number of combination indices to sample for random sweeps only. "
+            "Ignored for ofat, default, and tweak."
         ),
     )
     parser.add_argument(
@@ -162,10 +174,7 @@ def main():
         "--seed",
         type=int,
         default=262,
-        help=(
-            "Random seed for reproducibility in random sweeps. "
-            "Ignored when --sweep-type=ofat."
-        ),
+        help="Random seed for random sweeps only; ignored otherwise.",
     )
     args = parser.parse_args()
 
@@ -197,6 +206,31 @@ def main():
             f"{len(combinations)} total combinations. "
             "Arguments --num-combinations and --seed are ignored for OFAT sweeps."
         )
+    elif args.sweep_type == "default":
+        combinations = [dict(DEFAULT_PARAM_VALUES)]
+        print(
+            "Single default baseline row (--num-combinations and --seed ignored)."
+        )
+    elif args.sweep_type == "tweak":
+        combinations = []
+        skipped = []
+        for key in PARAM_KEYS:
+            alt = first_non_default_value(key)
+            if alt is None:
+                skipped.append(key)
+                continue
+            row = dict(DEFAULT_PARAM_VALUES)
+            row[key] = alt
+            combinations.append(row)
+        print(
+            f"Tweak sweep: {len(combinations)} rows (one non-default value per parameter). "
+            f"--num-combinations and --seed ignored."
+        )
+        if skipped:
+            print(
+                f"Skipped {len(skipped)} parameter(s) with no value != default in PARAM_VALUES: "
+                f"{', '.join(skipped)}"
+            )
 
     # One row per combination
     df = pd.DataFrame(combinations)
