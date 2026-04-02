@@ -135,12 +135,46 @@ def parse_args():
             "If omitted, progress_interval is not set (default CPU behavior, typically off)."
         ),
     )
+    parser.add_argument(
+        "--take-checkpoint", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--restore-checkpoint", action="store_true", default=False
+    )
     # Output directory
     parser.add_argument("--outdir", type=str, default="m5out")
+    parser.add_argument("--checkpoint-dir", type=str)
+
     args = parser.parse_args()
 
+    # Check arguments for valid options
     if args.fast_only and args.fast_forward is not None:
         parser.error("--fast-only cannot be used with --fast-forward")
+
+    if args.take_checkpoint and args.restore_checkpoint:
+        parser.error(
+            "--take-checkpoint and --restore-checkpoint are mutually exclusive"
+        )
+
+    if (
+        args.take_checkpoint or args.restore_checkpoint
+    ) and args.checkpoint_dir is None:
+        parser.error(
+            "--checkpoint-dir is required when taking or restoring a checkpoint"
+        )
+
+    if args.take_checkpoint and args.fast_forward is None:
+        parser.error(
+            "--take-checkpoint requires fast-forward (e.g. --fast-forward 100000000)"
+        )
+
+    if args.take_checkpoint and args.max_insts is not None:
+        parser.error("--take-checkpoint ignores --max-insts")
+
+    if args.restore_checkpoint and args.fast_forward:
+        parser.error(
+            "--restore-checkpoint cannot be used with --fast-forward (checkpoint already encodes that position)"
+        )
 
     return args
 
@@ -220,29 +254,57 @@ class AtomicProcessor(BaseCPUProcessor):
 
 
 class FastForwardToO3Processor(SwitchableProcessor):
-    def __init__(self, detailed_core: MyOutOfOrderCore, core_id: int = 0):
+    def __init__(
+        self,
+        detailed_core: MyOutOfOrderCore,
+        core_id: int = 0,
+        start_detailed: bool = False,
+    ):
+        """
+        :param start_detailed: If True, build with O3 active and Atomic switched out.
+            Use for checkpoint restore when the checkpoint was taken after switch()
+            (O3 running). Otherwise BaseCPU::unserialize expects _pid on the Atomic
+            core but switched-out CPUs omit it from the checkpoint.
+        """
         self._start_key = "fast_forward"
         self._switch_key = "detailed"
-        self._is_fast_forward = True
+        self._start_detailed = start_detailed
+        self._is_fast_forward = not start_detailed
         switchable_cores = {
             self._start_key: [AtomicCore(core_id=core_id)],
             self._switch_key: [detailed_core],
         }
         super().__init__(
             switchable_cores=switchable_cores,
-            starting_cores=self._start_key,
+            starting_cores=(
+                self._switch_key if start_detailed else self._start_key
+            ),
         )
 
     @overrides(SwitchableProcessor)
     def incorporate_processor(self, board: AbstractBoard) -> None:
         super().incorporate_processor(board=board)
-        board.set_mem_mode(MemMode.ATOMIC)
+        board.set_mem_mode(
+            MemMode.TIMING if self._start_detailed else MemMode.ATOMIC
+        )
 
     def switch(self):
         if self._is_fast_forward:
             self._board.set_mem_mode(MemMode.TIMING)
             self.switch_to_processor(self._switch_key)
             self._is_fast_forward = False
+
+    def _post_instantiate(self) -> None:
+        super()._post_instantiate()
+        # After checkpoint restore, SimObject switched_out matches the saved CPU
+        # but Python _current_cores still reflects the initial starting_cores.
+        detailed_sim = self.detailed[0].get_simobject()
+        if not detailed_sim.switched_out:
+            self._current_cores = self.detailed
+            self._is_fast_forward = False
+        else:
+            self._current_cores = self.fast_forward
+            self._is_fast_forward = True
 
 
 class MyCacheHierarchy(PrivateL1SharedL2CacheHierarchy):
@@ -342,16 +404,23 @@ detailed_core = MyOutOfOrderCore(
 )
 
 if _args.fast_only:
+    # Fast only execution uses simple AtomicProcessor w/o O3 switching
     processor = AtomicProcessor(core_id=0)
     sim_cpu = processor.get_cores()[0].get_simobject()
-elif _args.fast_forward:
+elif _args.restore_checkpoint:
+    # Same CPU topology as when the checkpoint was taken (after fast-forward switch).
+    # Initial switched_out flags must match that state so unserialize matches the cpt.
+    processor = FastForwardToO3Processor(
+        detailed_core=detailed_core, core_id=0, start_detailed=True
+    )
+    sim_cpu = detailed_core.get_simobject()
+elif _args.take_checkpoint or _args.fast_forward:
+    # Both checkpoint-taking and ordinary fast-forward use this processor
     processor = FastForwardToO3Processor(
         detailed_core=detailed_core, core_id=0
     )
     ff_cpu = processor.fast_forward[0].get_simobject()
     ff_cpu.max_insts_any_thread = _args.fast_forward
-    if _args.progress_interval is not None:
-        ff_cpu.progress_interval = _args.progress_interval
     sim_cpu = detailed_core.get_simobject()
 else:
     processor = MyOutOfOrderProcessor(core=detailed_core)
@@ -435,7 +504,8 @@ spec_benchmarks = {
             "055ce243071129412e9dd0b3b69a21654033a9b723d874b2015c774fac1553d9"
             "713be561ca86f74e4f16f22e664fc17a79f30caa5ad2c04fbc447549c2810fae",
             "1548636",
-            "1555348" "0",
+            "1555348",
+            "0",
         ],
     },
     "500.perlbench_r": {
@@ -483,11 +553,18 @@ elif _args.benchmark in spec_benchmarks:
 else:
     raise ValueError(f"Invalid benchmark: {_args.benchmark}")
 
+# Only set checkpoint if --restore-checkpoint
+_restore_ckpt_path = (
+    Path(_args.checkpoint_dir).expanduser().resolve()
+    if _args.restore_checkpoint
+    else None
+)
 board.set_se_binary_workload(
     binary=binary,
     arguments=arguments,
     stdout_file=Path("stdout.txt"),
     stderr_file=Path("stderr.txt"),
+    checkpoint=_restore_ckpt_path,
 )
 
 if spec_cwd is not None:
@@ -502,7 +579,29 @@ if spec_cwd is not None:
         for process in cpu_simobj.workload:
             process.cwd = spec_cwd
 
-if _args.fast_forward and not _args.fast_only:
+if _args.take_checkpoint:
+    # Phase 1: fast-forward then snapshot
+    def _checkpoint_and_exit():
+        ckpt_path = Path(_args.checkpoint_dir).expanduser().resolve()
+        ckpt_path.mkdir(parents=True, exist_ok=True)
+        print(f"Fast-forward done. Taking checkpoint → {ckpt_path}")
+        processor.switch()  # switch to O3 so the checkpoint captures O3 state
+        m5.stats.reset()
+        simulator.save_checkpoint(ckpt_path)
+        print("Checkpoint written. Exiting.")
+        yield True  # exit immediately after checkpoint
+
+    print(f"Taking checkpoint after {_args.fast_forward} instructions.")
+    simulator = Simulator(
+        board=board,
+        outdir=_args.outdir,
+        on_exit_event={ExitEvent.MAX_INSTS: _checkpoint_and_exit()},
+    )
+elif _args.restore_checkpoint:
+    # Phase 2: restore and run O3 directly
+    print(f"Restoring checkpoint from {_restore_ckpt_path}")
+    simulator = Simulator(board=board, outdir=_args.outdir)
+elif _args.fast_forward:
 
     def _switch_after_fast_forward():
         print(

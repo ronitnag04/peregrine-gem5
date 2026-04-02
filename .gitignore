@@ -40,3 +40,5 @@ typings
 .DS_Store
 configs/peregrine/**/*.csv
 configs/peregrine/**/*.log
+configs/peregrine/**/*.pmem
+configs/peregrine/**/*.cpt
