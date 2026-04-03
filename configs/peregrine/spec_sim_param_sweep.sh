@@ -32,11 +32,40 @@ OUT_BASE="$GEM5_ROOT/configs/peregrine/sweep_outputs"
 ERR_LOG_DIR="$GEM5_ROOT/configs/peregrine/sweep_errors"
 mkdir -p "$ERR_LOG_DIR"
 RESULTS_CSV="${RESULTS_CSV:-$GEM5_ROOT/configs/peregrine/sweep_results.csv}"
+FAILED_CSV="$ERR_LOG_DIR/failed_param_sweep.csv"
 LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
 mkdir -p "$OUT_BASE"
 
 BENCHMARKS=("505.mcf_r" "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exchange2_r" "531.deepsjeng_r" "557.xz_r" "525.x264_r" "502.gcc_r") # "500.perlbench_r"
-export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV LOCK_FILE BENCHMARKS
+for bench in "${BENCHMARKS[@]}"; do
+  _cpt_dir="$CHECKPOINT_DIR/${bench}"
+  _cpt_file="$_cpt_dir/m5.cpt"
+  _pmem_file="$_cpt_dir/board.physmem.store0.pmem"
+  if [[ ! -d "$_cpt_dir" ]]; then
+    echo "Checkpoint directory not found: $_cpt_dir" >&2
+    echo "Run configs/peregrine/spec_checkpoint_benchmarks.sh first." >&2
+    exit 1
+  fi
+  if [[ ! -f "$_cpt_file" ]]; then
+    echo "Checkpoint file not found: $_cpt_file" >&2
+    exit 1
+  fi
+  if [[ ! -f "$_pmem_file" ]]; then
+    echo "Physical memory file not found: $_pmem_file" >&2
+    exit 1
+  fi
+done
+unset _cpt_dir _cpt_file _pmem_file
+
+export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV FAILED_CSV LOCK_FILE BENCHMARKS
+
+log_failed_sweep_row() {
+  (
+    flock -x 9
+    echo "$1" >> "$FAILED_CSV"
+  ) 9>>"$LOCK_FILE"
+}
+export -f log_failed_sweep_row
 
 run_one() {
   local line="$1"
@@ -65,25 +94,12 @@ run_one() {
   local stride_prefetcher_degree="${F[21]}"
 
   local checkpoint_dir="$CHECKPOINT_DIR/${bench}"
-  local cpt_file="$checkpoint_dir/m5.cpt"
-  local pmem_file="$checkpoint_dir/board.physmem.store0.pmem"
-  if [[ ! -d "$checkpoint_dir" ]]; then
-    echo "Checkpoint directory not found: $checkpoint_dir" >&2
-    echo "Run configs/peregrine/spec_checkpoint_benchmarks.sh first." >&2
-    return 1
-  fi
-  if [[ ! -f "$cpt_file" ]]; then
-    echo "Checkpoint file not found: $cpt_file" >&2
-    return 1
-  fi
-  if [[ ! -f "$pmem_file" ]]; then
-    echo "Physical memory file not found: $pmem_file" >&2
-    return 1
-  fi
 
   local outdir="$OUT_BASE/m5out_${PARALLEL_SEQ:-$$}"
   mkdir -p "$outdir"
   local log_file="$outdir/$bench-$bp-$commit_width-$decode_width-$fetch_width-$fp_mult_div_issue_width-$fp_reg_issue_width-$int_mult_div_issue_width-$int_reg_issue_width-$l1d_size-$l1i_size-$l2_size-$lq_entries-$max_icache_fills-$rdwr_port_issue_width-$read_port_issue_width-$rename_width-$rob_size-$simd_unit_issue_width-$sq_entries-$stride_prefetcher_degree.log"
+  # Subshell stderr (gem5 stderr, bash "Killed", etc.) — gem5 stdout goes to log_file via --stdout-file
+  local job_stderr="$outdir/job.stderr"
 
   # Run gem5, capturing exit status so we can decide whether to keep or delete the log.
   set +e
@@ -115,7 +131,7 @@ run_one() {
       --stride-prefetcher-degree "$stride_prefetcher_degree" \
       --benchmark "$bench" \
       --outdir "$outdir"
-  )
+  ) 2>"$job_stderr"
   local gem_status=$?
   set -e
 
@@ -123,10 +139,33 @@ run_one() {
   # - If gem5 succeeded, delete the per-run log.
   # - If gem5 failed, keep the log so the failure can be inspected.
   if [[ $gem_status -eq 0 ]]; then
-    rm -f "$log_file"
+    rm -f "$log_file" "$job_stderr"
   else
     local err_log_file="$ERR_LOG_DIR/$(basename "$log_file")"
     mv "$log_file" "$err_log_file"
+    local err_tmp="${err_log_file}.tmp.$$"
+    {
+      printf '%s\n' \
+        "=== gem5 sweep failure ===" \
+        "exit_code=${gem_status}" \
+        "benchmark=${bench}" \
+        "param_sweep_row_index=${row}" \
+        "checkpoint_dir=${checkpoint_dir}" \
+        "saved_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
+      if [[ $gem_status -eq 137 ]]; then
+        printf '%s\n' "note: exit 137 often indicates OOM killer (SIGKILL)."
+      fi
+      if [[ -s "$job_stderr" ]]; then
+        printf '\n%s\n' "=== job stderr (gem5 + shell) ==="
+        cat "$job_stderr"
+      fi
+      printf '\n%s\n' "=== gem5 stdout ==="
+      cat "$err_log_file"
+    } >"$err_tmp" && mv "$err_tmp" "$err_log_file"
+    rm -f "$job_stderr"
+    # Same columns as param_sweep.csv (branch_predictor … stride_prefetcher_degree)
+    local param_sweep_row="${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
+    log_failed_sweep_row "$param_sweep_row"
     echo "gem5.opt failed (status $gem_status) for benchmark=$bench, row=$row; log saved at: $err_log_file" >&2
   fi
 
@@ -149,6 +188,8 @@ export -f run_one
 
 # Write CSV header (cpi first, then benchmark, param columns; matches param_sweep.csv)
 echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
+# Failed gem5 runs only: header matches param_sweep.csv (parameter columns only)
+head -n 1 "$SWEEP_CSV" > "$FAILED_CSV"
 touch "$LOCK_FILE"
 
 echo "Sweep started at $(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -168,7 +209,7 @@ SWEEP_START_EPOCH=$(date +%s)
       echo "${job_count},${bench},${csv_line}"
     done
   done
-} < "$SWEEP_CSV" | parallel -j 14 --env run_one run_one
+} < "$SWEEP_CSV" | parallel -j 179 --env run_one --env log_failed_sweep_row run_one
 
 SWEEP_END_EPOCH=$(date +%s)
 SWEEP_ELAPSED=$((SWEEP_END_EPOCH - SWEEP_START_EPOCH))
@@ -179,6 +220,16 @@ echo "Sweep finished at $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "Sweep wall time: ${SWEEP_ELAPSED}s (${SWEEP_ELAPSED_H}h ${SWEEP_ELAPSED_M}m ${SWEEP_ELAPSED_S}s)"
 
 rm -rf "$OUT_BASE"
+
+_had_gem5_failures=0
+if [[ -f "$FAILED_CSV" ]]; then
+  if [[ $(wc -l < "$FAILED_CSV" | tr -d ' ') -gt 1 ]]; then
+    _had_gem5_failures=1
+  else
+    rm -f "$FAILED_CSV"
+  fi
+fi
+
 if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
   rmdir "$ERR_LOG_DIR"
 fi
@@ -186,3 +237,7 @@ fi
 rm "$LOCK_FILE"
 
 echo "Results in $RESULTS_CSV"
+if [[ "$_had_gem5_failures" -eq 1 ]]; then
+  echo "Failed param rows (gem5 errors) recorded in $FAILED_CSV"
+fi
+unset _had_gem5_failures
