@@ -35,13 +35,7 @@ RESULTS_CSV="${RESULTS_CSV:-$GEM5_ROOT/configs/peregrine/sweep_results.csv}"
 LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
 mkdir -p "$OUT_BASE"
 
-# Max concurrent jobs (upper bound); actual concurrency is also limited by --memsuspend.
-SWEEP_JOBS="${SWEEP_JOBS:-$(nproc)}"
-# Peak RAM one gem5 job is expected to need (set high enough to avoid OOM; lower if your
-# machine is small—parallel will run fewer jobs concurrently). Disable throttling: SWEEP_MEMSUSPEND=0
-SWEEP_MEMSUSPEND="${SWEEP_MEMSUSPEND:-4G}"
-
-BENCHMARKS=("505.mcf_r") # "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exchange2_r" "531.deepsjeng_r" "557.xz_r" "525.x264_r" "502.gcc_r") # "500.perlbench_r"
+BENCHMARKS=("505.mcf_r" "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exchange2_r" "531.deepsjeng_r" "557.xz_r" "525.x264_r" "502.gcc_r") # "500.perlbench_r"
 export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV LOCK_FILE BENCHMARKS
 
 run_one() {
@@ -157,10 +151,12 @@ export -f run_one
 echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
 touch "$LOCK_FILE"
 
+echo "Sweep started at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+SWEEP_START_EPOCH=$(date +%s)
+
 # Build job lines: row,benchmark,branch_predictor,commit_width,...,stride_prefetcher_degree (22 fields)
 # Explicitly read and discard exactly one header line, then stream all parameter lines.
-# Number rows from 1. Parallelism: SWEEP_JOBS max workers; --memsuspend limits starts
-# when free RAM is low (suspends/resumes jobs instead of spawning until OOM).
+# Number rows from 1.
 {
   # Read and discard header
   IFS= read -r _header
@@ -172,21 +168,15 @@ touch "$LOCK_FILE"
       echo "${job_count},${bench},${csv_line}"
     done
   done
-} < "$SWEEP_CSV" | {
-  if [[ -n "$SWEEP_MEMSUSPEND" && "$SWEEP_MEMSUSPEND" != "0" ]]; then
-    echo "Parallel: -j ${SWEEP_JOBS} --memsuspend ${SWEEP_MEMSUSPEND} (set SWEEP_MEMSUSPEND=0 to disable)" >&2
-    parallel -j "$SWEEP_JOBS" --memsuspend "$SWEEP_MEMSUSPEND" \
-      --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env SWEEP_CSV --env OUT_BASE \
-      --env ERR_LOG_DIR --env RESULTS_CSV --env LOCK_FILE --env BENCHMARKS --env run_one \
-      run_one
-  else
-    echo "Parallel: -j ${SWEEP_JOBS} (memory suspend disabled)" >&2
-    parallel -j "$SWEEP_JOBS" \
-      --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env SWEEP_CSV --env OUT_BASE \
-      --env ERR_LOG_DIR --env RESULTS_CSV --env LOCK_FILE --env BENCHMARKS --env run_one \
-      run_one
-  fi
-}
+} < "$SWEEP_CSV" | parallel -j 14 --env run_one run_one
+
+SWEEP_END_EPOCH=$(date +%s)
+SWEEP_ELAPSED=$((SWEEP_END_EPOCH - SWEEP_START_EPOCH))
+SWEEP_ELAPSED_H=$((SWEEP_ELAPSED / 3600))
+SWEEP_ELAPSED_M=$(((SWEEP_ELAPSED % 3600) / 60))
+SWEEP_ELAPSED_S=$((SWEEP_ELAPSED % 60))
+echo "Sweep finished at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+echo "Sweep wall time: ${SWEEP_ELAPSED}s (${SWEEP_ELAPSED_H}h ${SWEEP_ELAPSED_M}m ${SWEEP_ELAPSED_S}s)"
 
 rm -rf "$OUT_BASE"
 if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
@@ -195,4 +185,4 @@ fi
 
 rm "$LOCK_FILE"
 
-echo "Sweep finished. Results in $RESULTS_CSV"
+echo "Results in $RESULTS_CSV"

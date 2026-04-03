@@ -118,7 +118,7 @@ touch "$LOCK_FILE"
 
 # Build job lines: row,benchmark,branch_predictor,commit_width,...,stride_prefetcher_degree (22 fields)
 # Explicitly read and discard exactly one header line, then stream all parameter lines.
-# Number rows from 1. Run with 31 parallel jobs (leave 1 CPU for SSH/monitor).
+# Number rows from 1.
 {
   # Read and discard header
   IFS= read -r _header
