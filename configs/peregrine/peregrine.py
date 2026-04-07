@@ -6,6 +6,12 @@ from typing import (
     Type,
 )
 
+from utils import (
+    peregrine_benchmarks,
+    spec_benchmark_args,
+    spec_benchmarks,
+)
+
 import m5
 from m5.objects import (
     TAGE,
@@ -238,14 +244,14 @@ class MyOutOfOrderCore(BaseCPUCore):
         self.core.branchPred = branch_predictor
 
 
-class AtomicCore(BaseCPUCore):
-    def __init__(self, core_id: int = 0):
-        super().__init__(AtomicSimpleCPU(cpu_id=core_id), ISA.X86)
-
-
 class MyOutOfOrderProcessor(BaseCPUProcessor):
     def __init__(self, core: MyOutOfOrderCore):
         super().__init__([core])
+
+
+class AtomicCore(BaseCPUCore):
+    def __init__(self, core_id: int = 0):
+        super().__init__(AtomicSimpleCPU(cpu_id=core_id), ISA.X86)
 
 
 class AtomicProcessor(BaseCPUProcessor):
@@ -253,7 +259,7 @@ class AtomicProcessor(BaseCPUProcessor):
         super().__init__([AtomicCore(core_id=core_id)])
 
 
-class FastForwardToO3Processor(SwitchableProcessor):
+class MySwitchableProcessor(SwitchableProcessor):
     def __init__(
         self,
         detailed_core: MyOutOfOrderCore,
@@ -410,15 +416,13 @@ if _args.fast_only:
 elif _args.restore_checkpoint:
     # Same CPU topology as when the checkpoint was taken (after fast-forward switch).
     # Initial switched_out flags must match that state so unserialize matches the cpt.
-    processor = FastForwardToO3Processor(
+    processor = MySwitchableProcessor(
         detailed_core=detailed_core, core_id=0, start_detailed=True
     )
     sim_cpu = detailed_core.get_simobject()
 elif _args.take_checkpoint or _args.fast_forward:
     # Both checkpoint-taking and ordinary fast-forward use this processor
-    processor = FastForwardToO3Processor(
-        detailed_core=detailed_core, core_id=0
-    )
+    processor = MySwitchableProcessor(detailed_core=detailed_core, core_id=0)
     ff_cpu = processor.fast_forward[0].get_simobject()
     ff_cpu.max_insts_any_thread = _args.fast_forward
     sim_cpu = detailed_core.get_simobject()
@@ -459,85 +463,7 @@ board = SimpleBoard(
     clk_freq="3GHz",
 )
 
-peregrine_benchmarks = [
-    "branch_storm",
-    "collatz",
-    "dhrystone",
-    "linpack",
-    "sieve",
-    "sparse",
-    "towers",
-    "whetstone",
-]
-
-
-spec_benchmarks = {
-    "505.mcf_r": {
-        "binary": "mcf_r_base.peregrine-m64",
-        "arguments": ["inp.in"],
-    },
-    "520.omnetpp_r": {
-        "binary": "omnetpp_r_base.peregrine-m64",
-        "arguments": ["-f", "omnetpp.ini", "-c", "General", "-r", "0"],
-    },
-    "523.xalancbmk_r": {
-        "binary": "cpuxalan_r_base.peregrine-m64",
-        "arguments": ["-v", "test.xml", "xalanc.xsl"],
-    },
-    "541.leela_r": {
-        "binary": "leela_r_base.peregrine-m64",
-        "arguments": ["test.sgf"],
-    },
-    "548.exchange2_r": {
-        "binary": "exchange2_r_base.peregrine-m64",
-        "arguments": ["0"],
-    },
-    "531.deepsjeng_r": {
-        "binary": "deepsjeng_r_base.peregrine-m64",
-        "arguments": ["test.txt"],
-    },
-    "557.xz_r": {
-        "binary": "xz_r_base.peregrine-m64",
-        "arguments": [
-            "cpu2006docs.tar.xz",
-            "4",
-            "055ce243071129412e9dd0b3b69a21654033a9b723d874b2015c774fac1553d9"
-            "713be561ca86f74e4f16f22e664fc17a79f30caa5ad2c04fbc447549c2810fae",
-            "1548636",
-            "1555348",
-            "0",
-        ],
-    },
-    "500.perlbench_r": {
-        "binary": "perlbench_r_base.peregrine-m64",
-        "arguments": ["test.pl"],
-    },
-    "525.x264_r": {
-        "binary": "x264_r_base.peregrine-m64",
-        "arguments": [
-            "--dumpyuv",
-            "50",
-            "--frames",
-            "156",
-            "-o",
-            "BuckBunny_New.264",
-            "BuckBunny.yuv",
-            "1280x720",
-        ],
-    },
-    "502.gcc_r": {
-        "binary": "cpugcc_r_base.peregrine-m64",
-        "arguments": [
-            "t1.c",
-            "-O3",
-            "-finline-limit=50000",
-            "-o",
-            "t1.opts-O3_-finline-limit_50000.s",
-        ],
-    },
-}
-
-spec_cwd: Optional[str] = None
+run_cwd: Optional[str] = None
 
 if _args.benchmark in peregrine_benchmarks:
     binary = BinaryResource(
@@ -546,9 +472,9 @@ if _args.benchmark in peregrine_benchmarks:
     arguments = []
 elif _args.benchmark in spec_benchmarks:
     rundir = f"{_args.specdir}/benchspec/CPU/{_args.benchmark}/run/run_base_test_peregrine-m64.0000"
-    spec_cwd = rundir
-    binary = spec_benchmarks[_args.benchmark]["binary"]
-    arguments = spec_benchmarks[_args.benchmark]["arguments"]
+    run_cwd = rundir
+    binary = spec_benchmark_args[_args.benchmark]["binary"]
+    arguments = spec_benchmark_args[_args.benchmark]["arguments"]
     binary = BinaryResource(local_path=f"{rundir}/{binary}")
 else:
     raise ValueError(f"Invalid benchmark: {_args.benchmark}")
@@ -567,7 +493,7 @@ board.set_se_binary_workload(
     checkpoint=_restore_ckpt_path,
 )
 
-if spec_cwd is not None:
+if run_cwd is not None:
     sim_processor = board.get_processor()
     cores = (
         sim_processor._all_cores()
@@ -577,7 +503,7 @@ if spec_cwd is not None:
     for core in cores:
         cpu_simobj = core.get_simobject()
         for process in cpu_simobj.workload:
-            process.cwd = spec_cwd
+            process.cwd = run_cwd
 
 if _args.take_checkpoint:
     # Phase 1: fast-forward then snapshot
