@@ -60,7 +60,7 @@ BENCHMARKS=("505.mcf_r" "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exc
 # Format: benchmark_name -> "instructions1 instructions2 instructions3 ..."
 # Note: seq <start> <step> <stop> to define the sequence of instruction counts. <stop> is inclusive.
 declare -A benchmark_checkpoints=(
-  ["505.mcf_r"]="$(seq 300000000 10000000 1580000000)"
+  ["505.mcf_r"]="$(seq 300000000 10000000 1570000000)"
   ["520.omnetpp_r"]="$(seq 100000000 94500000 12195565497)"
   ["523.xalancbmk_r"]="$(seq 100000000 1760000 324007592)"
   ["541.leela_r"]="$(seq 100000000 185000000 23772938110)"
