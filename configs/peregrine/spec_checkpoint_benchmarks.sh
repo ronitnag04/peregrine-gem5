@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Create gem5 checkpoints for Peregrine SPEC CPU 2017 rate benchmarks.
 #
-# For each benchmark, runs fast-forward simulation to a fixed cycle count, then
+# For each benchmark and checkpoint point, runs fast-forward simulation to the specified instruction count, then
 # writes a checkpoint. This is the companion to spec_trace_benchmarks.sh: traces
 # restore these checkpoints at the same fast-forward point.
 #
-# Invocation (per benchmark):
+# Invocation (per benchmark+checkpoint combination):
 #   build/X86/gem5.opt configs/peregrine/peregrine.py \
-#     --benchmark <bench> --fast-forward <cycles> --take-checkpoint \
-#     --checkpoint-dir <CHECKPOINT_DIR>/<bench> --outdir <CHECKPOINT_OUT_BASE>/m5out_<bench>
+#     --benchmark <bench> --fast-forward <instructions> --take-checkpoint \
+#     --checkpoint-dir <CHECKPOINT_DIR>/<bench>_<instructions> --outdir <CHECKPOINT_OUT_BASE>/m5out_<bench>_<instructions>
 #
 # Each successful run leaves:
-#   <CHECKPOINT_DIR>/<bench>/m5.cpt
-#   <CHECKPOINT_DIR>/<bench>/board.physmem.store0.pmem
+#   <CHECKPOINT_DIR>/<bench>_<instructions>/m5.cpt
+#   <CHECKPOINT_DIR>/<bench>_<instructions>/board.physmem.store0.pmem
 #
 # Defaults (override via environment):
 # - GEM5_ROOT: /home/ubuntu/peregrine-gem5
@@ -20,7 +20,7 @@
 # - CHECKPOINT_DIR: $GEM5_ROOT/configs/peregrine/checkpoints
 # - CHECKPOINT_OUT_BASE: $GEM5_ROOT/configs/peregrine/checkpoints_outputs (temporary m5out; removed after each run and at the end)
 #
-# Requires GNU parallel. Benchmarks run in parallel (-j $(nproc)).
+# Requires GNU parallel. Benchmark+checkpoint combinations run in parallel (-j $(nproc)).
 # Run from anywhere; the script cd's to GEM5_ROOT.
 #
 
@@ -55,20 +55,23 @@ BENCHMARKS=("505.mcf_r" "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exc
 # "557.xz_r" : 497_090_979          # After the input data is loaded
 # "541.leela_r" : 20_419_485_412    # Printed out a lot of info
 
-# Map each benchmark to a fast-forward cycle count.
-declare -A fast_forward_cycles=(
-  ["505.mcf_r"]=370000000           # After start of the primal_net_simplex function
-  ["520.omnetpp_r"]=1000000000      # Still setting up omnetpp
-  ["523.xalancbmk_r"]=100000000     # Good, in the middle of printing out html
-  ["541.leela_r"]=1000000000        # Probably doing work by this point
-  ["548.exchange2_r"]=7505000000    # After output of first move
-  ["531.deepsjeng_r"]=350000000     # After making first moves
-  ["557.xz_r"]=500000000            # Before termination, probably near the input hashing
-  ["525.x264_r"]=10000000000        # Before frame 0 finished, ideally while its working
-  ["502.gcc_r"]=10000000            # Good, no output .s file written, but full program only takes 15_090_619 insts
+# Map each benchmark to multiple fast-forward instruction counts.
+# Each benchmark maps to a space-separated list of instruction counts.
+# Format: benchmark_name -> "instructions1 instructions2 instructions3 ..."
+# Note: seq <start> <step> <stop> to define the sequence of instruction counts. <stop> is inclusive.
+declare -A benchmark_checkpoints=(
+  ["505.mcf_r"]="$(seq 300000000 10000000 1580000000)"
+  ["520.omnetpp_r"]="$(seq 100000000 94500000 12195565497)"
+  ["523.xalancbmk_r"]="$(seq 100000000 1760000 324007592)"
+  ["541.leela_r"]="$(seq 100000000 185000000 23772938110)"
+  ["548.exchange2_r"]="$(seq 7505000000 100000000 20205000000)"
+  ["531.deepsjeng_r"]="$(seq 100000000 4200000 637116693)"
+  ["557.xz_r"]="$(seq 100000000 5430000 791549354)"
+  ["525.x264_r"]="$(seq 10000000000 100000000 22700000000)"
+  ["502.gcc_r"]="$(seq 1000000 110000 15000000)"
 )
-FAST_FORWARD_CYCLES_DEF="$(declare -p fast_forward_cycles)"
-export FAST_FORWARD_CYCLES_DEF
+BENCHMARK_CHECKPOINTS_DEF="$(declare -p benchmark_checkpoints)"
+export BENCHMARK_CHECKPOINTS_DEF
 
 if [[ ! -d "$GEM5_ROOT" ]]; then
   echo "GEM5_ROOT not found: $GEM5_ROOT" >&2
@@ -87,27 +90,23 @@ mkdir -p "$CHECKPOINT_DIR"
 
 run_bench() {
   local bench="$1"
+  local ff_instructions="$2"
 
-  eval "$FAST_FORWARD_CYCLES_DEF"
-
-  local ff_cycles
-  ff_cycles="${fast_forward_cycles[$bench]}"
-
-  local outdir="$CHECKPOINT_OUT_BASE/m5out_${bench}"
+  local outdir="$CHECKPOINT_OUT_BASE/m5out_${bench}_${ff_instructions}"
   rm -rf "$outdir"
   mkdir -p "$outdir"
   local stdout_file="$outdir/gem5_stdout.log"
 
-  local checkpoint_dir="$CHECKPOINT_DIR/${bench}"
+  local checkpoint_dir="$CHECKPOINT_DIR/${bench}_${ff_instructions}"
 
-  echo "Checkpointing benchmark: $bench"
+  echo "Checkpointing benchmark: $bench at ${ff_instructions} instructions"
   set +e
   (
     cd "$GEM5_ROOT" || exit 1
     "$GEM5_BIN" --redirect-stdout --stdout-file="$stdout_file" configs/peregrine/peregrine.py \
       --benchmark "$bench" \
       --outdir "$outdir" \
-      --fast-forward "$ff_cycles" \
+      --fast-forward "$ff_instructions" \
       --take-checkpoint \
       --checkpoint-dir "$checkpoint_dir"
   )
@@ -117,7 +116,7 @@ run_bench() {
   if [[ $gem_status -eq 0 ]]; then
     rm -f "$stdout_file"
   else
-    echo "gem5.opt failed (status $gem_status) for benchmark=$bench; stdout log: $stdout_file" >&2
+    echo "gem5.opt failed (status $gem_status) for benchmark=$bench at ${ff_instructions} instructions; stdout log: $stdout_file" >&2
     return "$gem_status"
   fi
 
@@ -140,16 +139,34 @@ run_bench() {
     return 1
   fi
 
-  echo "${bench} Checkpoint created successfully: $checkpoint_dir"
+  echo "${bench}_${ff_instructions} Checkpoint created successfully: $checkpoint_dir"
 
   rm -rf "$outdir"
 }
 
 export -f run_bench
 
-printf "%s\n" "${BENCHMARKS[@]}" | parallel -j "$(nproc)" \
-  --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env CHECKPOINT_OUT_BASE --env run_bench --env FAST_FORWARD_CYCLES_DEF \
-  run_bench
+# Function to generate all benchmark+checkpoint combinations
+generate_combinations() {
+  eval "$BENCHMARK_CHECKPOINTS_DEF"
+
+  for bench in "${BENCHMARKS[@]}"; do
+    if [[ -n "${benchmark_checkpoints[$bench]:-}" ]]; then
+      instructions_list="${benchmark_checkpoints[$bench]}"
+      # Parse space-separated instruction counts
+      for instructions in $instructions_list; do
+        echo "$bench $instructions"
+      done
+    else
+      echo "Warning: No checkpoints defined for benchmark $bench" >&2
+    fi
+  done
+}
+
+# Generate combinations and run in parallel
+generate_combinations | parallel -j "$(nproc)" --colsep ' ' \
+  --env GEM5_ROOT --env GEM5_BIN --env CHECKPOINT_DIR --env CHECKPOINT_OUT_BASE --env run_bench \
+  run_bench {1} {2}
 
 
 rm -rf "$CHECKPOINT_OUT_BASE"
