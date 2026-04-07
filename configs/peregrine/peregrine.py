@@ -100,35 +100,10 @@ def parse_args():
     parser.add_argument(
         "--benchmark",
         type=str,
-        default="branch_storm",
-        choices=[
-            "branch_storm",
-            "collatz",
-            "dhrystone",
-            "linpack",
-            "sieve",
-            "sparse",
-            "towers",
-            "whetstone",
-            "505.mcf_r",
-            "520.omnetpp_r",
-            "523.xalancbmk_r",
-            "541.leela_r",
-            "548.exchange2_r",
-            "531.deepsjeng_r",
-            "557.xz_r",
-            # "500.perlbench_r",    # TODO: not compatible, may require FS mode to handle clock_nanosleep syscall
-            "525.x264_r",
-            "502.gcc_r",
-        ],
+        choices=peregrine_benchmarks + spec_benchmarks,
     )
     # Execution behavior
-    parser.add_argument(
-        "--fast-only",
-        action="store_true",
-        default=False,
-        help="Use only AtomicSimpleCPU for execution, skip O3 core",
-    )
+    parser.add_argument("--fast-only", action="store_true", default=False)
     parser.add_argument("--trace", action="store_true", default=False)
     parser.add_argument("--max-insts", type=int)
     parser.add_argument("--fast-forward", type=int)

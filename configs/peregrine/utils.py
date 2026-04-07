@@ -17,7 +17,7 @@ spec_benchmarks = [
     "548.exchange2_r",
     "531.deepsjeng_r",
     "557.xz_r",
-    # "500.perlbench_r",
+    # "500.perlbench_r", # TODO: not compatible, may require FS mode to handle clock_nanosleep syscall
     "525.x264_r",
     "502.gcc_r",
 ]
