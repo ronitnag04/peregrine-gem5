@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run gem5 peregrine param sweep: one job per (CSV row, benchmark).
-# Restores the checkpoint from spec_checkpoint_benchmarks.sh (same fast-forward point as
-# spec_trace_benchmarks.sh), then runs detailed O3 with the sweep parameters.
+# Run gem5 peregrine param sweep: one job per (CSV row, benchmark, checkpoint).
+# Restores checkpoints from spec_checkpoint_benchmarks.sh at multiple fast-forward points,
+# then runs detailed O3 with the sweep parameters for each checkpoint.
 # Uses GNU parallel. Results append to a single CSV with locking.
 #
 # Memory: each gem5 restore can use a lot of RSS. Running -j $(nproc) without limits
@@ -9,7 +9,7 @@
 # --memsuspend so new jobs wait and running jobs are suspended when RAM is tight,
 # then resumed when space is available (see SWEEP_MEMSUSPEND).
 #
-# Requires: GNU parallel (apt install parallel); checkpoints under CHECKPOINT_DIR
+# Requires: GNU parallel (apt install parallel); checkpoints under CHECKPOINT_DIR/<bench>_<ff_instructions>
 # Run from repo root or any dir; script cd's to peregrine-gem5.
 
 set -e
@@ -37,27 +37,69 @@ LOCK_FILE="$GEM5_ROOT/configs/peregrine/sweep_results.lock"
 mkdir -p "$OUT_BASE"
 
 BENCHMARKS=("505.mcf_r" "520.omnetpp_r" "523.xalancbmk_r" "541.leela_r" "548.exchange2_r" "531.deepsjeng_r" "557.xz_r" "525.x264_r" "502.gcc_r") # "500.perlbench_r"
+
+# Map each benchmark to multiple fast-forward instruction counts.
+# Each benchmark maps to a space-separated list of instruction counts.
+# Format: benchmark_name -> "instructions1 instructions2 instructions3 ..."
+# Note: seq <start> <step> <stop> to define the sequence of instruction counts. <stop> is inclusive.
+# This must match the checkpoints created by spec_checkpoint_benchmarks.sh
+
+# seq 300000000   20000000   1570000000      64/128
+# seq 100000000   189000000  12195565497     64/128
+# seq 100000000   7040000    324007592       32/128
+# seq 100000000   370000000  23772938110     64/128
+# seq 7505000000  200000000  20205000000     64/128
+# seq 100000000   16800000   637116693       32/128
+# seq 100000000   21720000   791549354       32/128
+# seq 10000000000 200000000  22700000000     64/128
+# seq 1000000     880000     15000000        16/128
+
+declare -A benchmark_checkpoints=(
+  ["505.mcf_r"]="$(seq 300000000 20000000 1570000000)"
+  ["520.omnetpp_r"]="$(seq 100000000 189000000 12195565497)"
+  ["523.xalancbmk_r"]="$(seq 100000000 7040000 324007592)"
+  ["541.leela_r"]="$(seq 100000000 370000000 23772938110)"
+  ["548.exchange2_r"]="$(seq 7505000000 200000000 20205000000)"
+  ["531.deepsjeng_r"]="$(seq 100000000 16800000 637116693)"
+  ["557.xz_r"]="$(seq 100000000 21720000 791549354)"
+  ["525.x264_r"]="$(seq 10000000000 200000000 22700000000)"
+  ["502.gcc_r"]="$(seq 1000000 880000 15000000)"
+)
+
+# Validate that all benchmark+checkpoint combinations exist
 for bench in "${BENCHMARKS[@]}"; do
-  _cpt_dir="$CHECKPOINT_DIR/${bench}"
-  _cpt_file="$_cpt_dir/m5.cpt"
-  _pmem_file="$_cpt_dir/board.physmem.store0.pmem"
-  if [[ ! -d "$_cpt_dir" ]]; then
-    echo "Checkpoint directory not found: $_cpt_dir" >&2
-    echo "Run configs/peregrine/spec_checkpoint_benchmarks.sh first." >&2
-    exit 1
-  fi
-  if [[ ! -f "$_cpt_file" ]]; then
-    echo "Checkpoint file not found: $_cpt_file" >&2
-    exit 1
-  fi
-  if [[ ! -f "$_pmem_file" ]]; then
-    echo "Physical memory file not found: $_pmem_file" >&2
-    exit 1
+  if [[ -n "${benchmark_checkpoints[$bench]:-}" ]]; then
+    instructions_list="${benchmark_checkpoints[$bench]}"
+    # Parse space-separated instruction counts
+    for instructions in $instructions_list; do
+      _cpt_dir="$CHECKPOINT_DIR/${bench}_${instructions}"
+      _cpt_file="$_cpt_dir/m5.cpt"
+      _pmem_file="$_cpt_dir/board.physmem.store0.pmem"
+      if [[ ! -d "$_cpt_dir" ]]; then
+        echo "Checkpoint directory not found: $_cpt_dir" >&2
+        echo "Run configs/peregrine/spec_checkpoint_benchmarks.sh first." >&2
+        exit 1
+      fi
+      if [[ ! -f "$_cpt_file" ]]; then
+        echo "Checkpoint file not found: $_cpt_file" >&2
+        exit 1
+      fi
+      if [[ ! -f "$_pmem_file" ]]; then
+        echo "Physical memory file not found: $_pmem_file" >&2
+        exit 1
+      fi
+    done
+  else
+    echo "Warning: No checkpoints defined for benchmark $bench" >&2
   fi
 done
 unset _cpt_dir _cpt_file _pmem_file
 
-export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV FAILED_CSV LOCK_FILE BENCHMARKS
+echo "All checkpoints found, proceeding with parameter sweep..."
+echo "Total number of checkpoints: $(echo "${benchmark_checkpoints[@]}" | wc -w)"
+
+BENCHMARK_CHECKPOINTS_DEF="$(declare -p benchmark_checkpoints)"
+export GEM5_ROOT GEM5_BIN CHECKPOINT_DIR SWEEP_CSV OUT_BASE ERR_LOG_DIR RESULTS_CSV FAILED_CSV LOCK_FILE BENCHMARKS BENCHMARK_CHECKPOINTS_DEF
 
 log_failed_sweep_row() {
   (
@@ -72,32 +114,36 @@ run_one() {
   IFS=',' read -ra F <<< "$line"
   local row="${F[0]}"
   local bench="${F[1]}"
-  local bp="${F[2]}"
-  local commit_width="${F[3]}"
-  local decode_width="${F[4]}"
-  local fetch_width="${F[5]}"
-  local fp_mult_div_issue_width="${F[6]}"
-  local fp_reg_issue_width="${F[7]}"
-  local int_mult_div_issue_width="${F[8]}"
-  local int_reg_issue_width="${F[9]}"
-  local l1d_size="${F[10]}"
-  local l1i_size="${F[11]}"
-  local l2_size="${F[12]}"
-  local lq_entries="${F[13]}"
-  local max_icache_fills="${F[14]}"
-  local rdwr_port_issue_width="${F[15]}"
-  local read_port_issue_width="${F[16]}"
-  local rename_width="${F[17]}"
-  local rob_size="${F[18]}"
-  local simd_unit_issue_width="${F[19]}"
-  local sq_entries="${F[20]}"
-  local stride_prefetcher_degree="${F[21]}"
+  local ff_instructions="${F[2]}"
+  local bp="${F[3]}"
+  local commit_width="${F[4]}"
+  local decode_width="${F[5]}"
+  local fetch_width="${F[6]}"
+  local fp_mult_div_issue_width="${F[7]}"
+  local fp_reg_issue_width="${F[8]}"
+  local int_mult_div_issue_width="${F[9]}"
+  local int_reg_issue_width="${F[10]}"
+  local l1d_size="${F[11]}"
+  local l1i_size="${F[12]}"
+  local l2_size="${F[13]}"
+  local lq_entries="${F[14]}"
+  local max_icache_fills="${F[15]}"
+  local rdwr_port_issue_width="${F[16]}"
+  local read_port_issue_width="${F[17]}"
+  local rename_width="${F[18]}"
+  local rob_size="${F[19]}"
+  local simd_unit_issue_width="${F[20]}"
+  local sq_entries="${F[21]}"
+  local stride_prefetcher_degree="${F[22]}"
 
-  local checkpoint_dir="$CHECKPOINT_DIR/${bench}"
+  # Restore benchmark_checkpoints associative array in the subshell
+  eval "$BENCHMARK_CHECKPOINTS_DEF"
+
+  local checkpoint_dir="$CHECKPOINT_DIR/${bench}_${ff_instructions}"
 
   local outdir="$OUT_BASE/m5out_${PARALLEL_SEQ:-$$}"
   mkdir -p "$outdir"
-  local log_file="$outdir/$bench-$bp-$commit_width-$decode_width-$fetch_width-$fp_mult_div_issue_width-$fp_reg_issue_width-$int_mult_div_issue_width-$int_reg_issue_width-$l1d_size-$l1i_size-$l2_size-$lq_entries-$max_icache_fills-$rdwr_port_issue_width-$read_port_issue_width-$rename_width-$rob_size-$simd_unit_issue_width-$sq_entries-$stride_prefetcher_degree.log"
+  local log_file="$outdir/$bench-$ff_instructions-$bp-$commit_width-$decode_width-$fetch_width-$fp_mult_div_issue_width-$fp_reg_issue_width-$int_mult_div_issue_width-$int_reg_issue_width-$l1d_size-$l1i_size-$l2_size-$lq_entries-$max_icache_fills-$rdwr_port_issue_width-$read_port_issue_width-$rename_width-$rob_size-$simd_unit_issue_width-$sq_entries-$stride_prefetcher_degree.log"
   # Subshell stderr (gem5 stderr, bash "Killed", etc.) — gem5 stdout goes to log_file via --stdout-file
   local job_stderr="$outdir/job.stderr"
 
@@ -106,7 +152,7 @@ run_one() {
   (
     cd "$GEM5_ROOT" || exit 1
     "$GEM5_BIN" --redirect-stdout --stdout-file="$log_file" configs/peregrine/peregrine.py \
-      --max-insts 1000000 \
+      --max-insts 100000 \
       --restore-checkpoint \
       --checkpoint-dir "$checkpoint_dir" \
       --branch-predictor "$bp" \
@@ -149,6 +195,7 @@ run_one() {
         "=== gem5 sweep failure ===" \
         "exit_code=${gem_status}" \
         "benchmark=${bench}" \
+        "ff_instructions=${ff_instructions}" \
         "param_sweep_row_index=${row}" \
         "checkpoint_dir=${checkpoint_dir}" \
         "saved_at=$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -166,7 +213,7 @@ run_one() {
     # Same columns as param_sweep.csv (branch_predictor … stride_prefetcher_degree)
     local param_sweep_row="${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
     log_failed_sweep_row "$param_sweep_row"
-    echo "gem5.opt failed (status $gem_status) for benchmark=$bench, row=$row; log saved at: $err_log_file" >&2
+    echo "gem5.opt failed (status $gem_status) for benchmark=$bench, ff_instructions=$ff_instructions, row=$row; log saved at: $err_log_file" >&2
   fi
 
   local cpi=""
@@ -174,7 +221,7 @@ run_one() {
   if [[ $gem_status -eq 0 && -f "$outdir/stats.txt" ]]; then
     # Get the CPI from the stats.txt file, using seconds set of stats dump corresponding to m5_work region of interest
     cpi=$(awk '/board.processor.detailed.core.cpi/ {print $2}' "$outdir/stats.txt")
-    local csv_row="${cpi},${bench},${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
+    local csv_row="${cpi},${bench},${ff_instructions},${bp},${commit_width},${decode_width},${fetch_width},${fp_mult_div_issue_width},${fp_reg_issue_width},${int_mult_div_issue_width},${int_reg_issue_width},${l1d_size},${l1i_size},${l2_size},${lq_entries},${max_icache_fills},${rdwr_port_issue_width},${read_port_issue_width},${rename_width},${rob_size},${simd_unit_issue_width},${sq_entries},${stride_prefetcher_degree}"
     (
       flock -x 9
       echo "$csv_row" >> "$RESULTS_CSV"
@@ -186,8 +233,8 @@ run_one() {
 }
 export -f run_one
 
-# Write CSV header (cpi first, then benchmark, param columns; matches param_sweep.csv)
-echo "cpi,benchmark,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
+# Write CSV header (cpi first, then benchmark, ff_instructions, param columns; matches param_sweep.csv)
+echo "cpi,benchmark,ff_instructions,branch_predictor,commit_width,decode_width,fetch_width,fp_mult_div_issue_width,fp_reg_issue_width,int_mult_div_issue_width,int_reg_issue_width,l1d_size,l1i_size,l2_size,lq_entries,max_icache_fills,rdwr_port_issue_width,read_port_issue_width,rename_width,rob_size,simd_unit_issue_width,sq_entries,stride_prefetcher_degree" > "$RESULTS_CSV"
 # Failed gem5 runs only: header matches param_sweep.csv (parameter columns only)
 head -n 1 "$SWEEP_CSV" > "$FAILED_CSV"
 touch "$LOCK_FILE"
@@ -195,21 +242,30 @@ touch "$LOCK_FILE"
 echo "Sweep started at $(date '+%Y-%m-%d %H:%M:%S %Z')"
 SWEEP_START_EPOCH=$(date +%s)
 
-# Build job lines: row,benchmark,branch_predictor,commit_width,...,stride_prefetcher_degree (22 fields)
+# Build job lines: row,benchmark,ff_instructions,branch_predictor,commit_width,...,stride_prefetcher_degree (23 fields)
 # Explicitly read and discard exactly one header line, then stream all parameter lines.
 # Number rows from 1.
 {
   # Read and discard header
   IFS= read -r _header
 
+  # Restore benchmark_checkpoints associative array
+  eval "$BENCHMARK_CHECKPOINTS_DEF"
+
   job_count=0
   while IFS= read -r csv_line; do
     ((job_count++)) || true
     for bench in "${BENCHMARKS[@]}"; do
-      echo "${job_count},${bench},${csv_line}"
+      if [[ -n "${benchmark_checkpoints[$bench]:-}" ]]; then
+        instructions_list="${benchmark_checkpoints[$bench]}"
+        # Parse space-separated instruction counts
+        for instructions in $instructions_list; do
+          echo "${job_count},${bench},${instructions},${csv_line}"
+        done
+      fi
     done
   done
-} < "$SWEEP_CSV" | parallel -j 179 --env run_one --env log_failed_sweep_row run_one
+} < "$SWEEP_CSV" | parallel -j $(nproc) --env run_one --env log_failed_sweep_row --env BENCHMARK_CHECKPOINTS_DEF run_one
 
 SWEEP_END_EPOCH=$(date +%s)
 SWEEP_ELAPSED=$((SWEEP_END_EPOCH - SWEEP_START_EPOCH))
