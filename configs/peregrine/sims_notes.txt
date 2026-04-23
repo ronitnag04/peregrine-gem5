@@ -1,0 +1,92 @@
+# Timings
+
+## restore + ff 10M + sim 100K + trace
+time ./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 10000000 --max-insts 100000 --trace
+real    0m23.250s
+user    0m21.114s
+sys     0m2.084s
+
+## restore + ff 10M + sim 100K
+time ./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 10000000 --max-insts 100000
+real    0m21.033s
+user    0m19.352s
+sys     0m1.682s
+
+## restore + ff 100M + sim 100K + trace
+time ./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 100000000 --max-insts 100000 --trace
+real    1m46.076s
+user    1m43.987s
+sys     0m2.035
+
+## restore + ff 100M + sim 100K
+time ./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 100000000 --max-insts 100000
+real    1m43.396s
+user    1m41.642s
+sys     0m1.754s
+
+## restore + ff 1 + sim 100K + trace
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 100000 --trace
+real    0m14.120s
+user    0m12.033s
+sys     0m2.035s
+
+## restore + ff 1 + sim 100K
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 100000
+real    0m11.768s
+user    0m10.020s
+sys     0m1.750s
+
+## restore + ff 1 + sim 1M + trace
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 1000000 --trace
+real    1m8.641s
+user    1m3.647s
+sys     0m4.956s
+
+## restore + ff 1 + sim 1M
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 1000000
+real    0m17.921s
+user    0m16.264s
+sys     0m1.658s
+
+## restore + ff 1 + sim 1 + trace
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 1 --trace
+real    0m11.170s
+user    0m9.518s
+sys     0m1.654s
+
+## restore + ff 1 + sim 1
+./build/X86/gem5.opt configs/peregrine/peregrine.py --benchmark 505.mcf_r --restore-checkpoint --checkpoint-dir configs/peregrine/mcf_test_checkpoints/cpt.1000000/ --fast-forward 1 --max-insts 1
+real    0m11.177s
+user    0m9.425s
+sys     0m1.754s
+
+
+# SPEC Train/Test Instruction Counts
+========================================================================
+SUMMARY (perf stat -e instructions,cycles)  SIZE=test
+========================================================================
+benchmark                    instructions             cycles   exit
+--------------------------------------------------------------------------------
+505.mcf_r                  30,169,656,389     34,920,893,910      0
+520.omnetpp_r              12,007,166,451      9,121,015,833      0
+523.xalancbmk_r               334,896,186        194,666,281      0
+541.leela_r                23,801,211,343     17,684,655,353      0
+548.exchange2_r            50,632,175,733     34,159,216,340      0
+531.deepsjeng_r            41,016,096,755     24,930,642,447      0
+557.xz_r                    3,200,730,676      2,515,154,866      0
+525.x264_r                209,989,956,038     73,591,130,282      0
+502.gcc_r                      21,344,859         17,920,617      0
+========================================================================
+SUMMARY (perf stat -e instructions,cycles)  SIZE=train
+========================================================================
+benchmark                    instructions             cycles   exit
+--------------------------------------------------------------------------------
+505.mcf_r                 150,261,507,796    207,161,944,306      0
+520.omnetpp_r             131,971,451,794    142,676,797,121      0
+523.xalancbmk_r           282,456,542,192    123,637,200,209      0
+541.leela_r               385,325,917,773    281,072,331,101      0
+548.exchange2_r           157,515,021,529    104,292,095,396      0
+531.deepsjeng_r           353,863,499,329    212,003,766,431      0
+557.xz_r                  103,646,538,512     62,223,286,225      0
+525.x264_r                176,639,589,813     60,481,372,725      0
+502.gcc_r                   9,376,497,667      5,185,850,147      0

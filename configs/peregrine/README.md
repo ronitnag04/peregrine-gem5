@@ -15,7 +15,7 @@ You can also add the `peregrine-nostrict` config file, which sets `strict_rundir
 ```bash
 cd SPEC2017-1-1-9
 source shrc
-runcpu --config=peregrine --action=runsetup --size=test 505.mcf_r 520.omnetpp_r 523.xalancbmk_r 541.leela_r 548.exchange2_r 531.deepsjeng_r 557.xz_r 500.perlbench_r 525.x264_r 502.gcc_r
+runcpu --config=peregrine --action=runsetup --size=test 505.mcf_r 520.omnetpp_r 523.xalancbmk_r 541.leela_r 548.exchange2_r 531.deepsjeng_r 557.xz_r 525.x264_r 502.gcc_r
 ```
 
 If you change the source code and need to regenerate the executable files and run directories:
