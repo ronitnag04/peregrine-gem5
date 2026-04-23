@@ -119,6 +119,15 @@ def parse_args():
         "--take-checkpoint", action="store_true", default=False
     )
     parser.add_argument(
+        "--checkpoints",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of integers indicating instructions points"
+            "to take checkpoints at, e.g. 100000,200000,300000"
+        ),
+    )
+    parser.add_argument(
         "--restore-checkpoint", action="store_true", default=False
     )
     # Output directory
@@ -126,6 +135,7 @@ def parse_args():
     parser.add_argument("--checkpoint-dir", type=str)
 
     args = parser.parse_args()
+    args.checkpoint_points = None
 
     # Check arguments for valid options
     if args.take_checkpoint and args.restore_checkpoint:
@@ -133,22 +143,39 @@ def parse_args():
             "--take-checkpoint and --restore-checkpoint are mutually exclusive"
         )
 
-    if (
-        args.take_checkpoint or args.restore_checkpoint
-    ) and args.checkpoint_dir is None:
-        parser.error(
-            "--checkpoint-dir is required when taking or restoring a checkpoint"
-        )
+    if args.take_checkpoint or args.restore_checkpoint:
+        if args.checkpoint_dir is None:
+            parser.error(
+                "--checkpoint-dir is required when taking or restoring a checkpoint"
+            )
 
-    if (args.take_checkpoint or args.restore_checkpoint) and (
-        args.fast_forward is None or args.fast_forward <= 0
-    ):
-        parser.error(
-            "--fast-forward > 0 is required when taking or restoring a checkpoint"
-        )
+    if args.restore_checkpoint:
+        if args.fast_forward is None or args.fast_forward <= 0:
+            parser.error(
+                "--fast-forward > 0 is required when restoring a checkpoint"
+            )
 
-    if args.take_checkpoint and args.max_insts is not None:
-        parser.error("--take-checkpoint ignores --max-insts")
+    if args.take_checkpoint:
+        if args.max_insts is not None:
+            parser.error("--take-checkpoint ignores --max-insts")
+        if (args.fast_forward is None) == (args.checkpoints is None):
+            parser.error(
+                "Must specify --fast-forward or --checkpoints when taking a checkpoint"
+            )
+        if args.fast_forward is not None and args.fast_forward <= 0:
+            parser.error(
+                "--fast-forward > 0 is required when taking a checkpoint"
+            )
+        if args.checkpoints is not None:
+            args.checkpoint_points = sorted(
+                [int(x.strip()) for x in args.checkpoints.split(",")]
+            )
+            if not args.checkpoint_points:
+                parser.error(
+                    "--checkpoints must list at least one positive integer"
+                )
+            if not all(x > 0 for x in args.checkpoint_points):
+                parser.error("All checkpoint points must be > 0")
 
     return args
 
@@ -353,7 +380,10 @@ if _args.take_checkpoint or _args.restore_checkpoint or _args.fast_forward:
     # Fast forward, and take checkpoint in atomic core (no switch to O3)
     processor = MySwitchableProcessor(detailed_core=detailed_core, core_id=0)
     ff_cpu = processor.fast_forward[0].get_simobject()
-    ff_cpu.max_insts_any_thread = _args.fast_forward
+    if _args.fast_forward is not None:
+        ff_cpu.max_insts_any_thread = _args.fast_forward
+    elif _args.checkpoint_points is not None:
+        ff_cpu.max_insts_any_thread = _args.checkpoint_points[0]
     sim_cpu = detailed_core.get_simobject()
 else:
     processor = MyOutOfOrderProcessor(core=detailed_core)
@@ -435,22 +465,58 @@ if run_cwd is not None:
             process.cwd = run_cwd
 
 if _args.take_checkpoint:
-    # Phase 1: fast-forward in atomic core, then take checkpoint (stay in atomic)
-    def _checkpoint_and_exit():
-        ckpt_path = Path(_args.checkpoint_dir).expanduser().resolve()
-        ckpt_path.mkdir(parents=True, exist_ok=True)
-        print(
-            f"Fast-forward done. Taking checkpoint in atomic core → {ckpt_path}"
-        )
-        simulator.save_checkpoint(ckpt_path)
-        print("Checkpoint written. Exiting.")
-        yield True  # exit immediately after checkpoint
+    # Phase 1: fast-forward in atomic core, then take checkpoint(s) (stay in atomic)
+    ckpt_base = Path(_args.checkpoint_dir).expanduser().resolve()
+    ckpt_base.mkdir(parents=True, exist_ok=True)
 
-    print(f"Taking checkpoint after {_args.fast_forward} instructions.")
+    if _args.checkpoint_points is not None:
+        points = _args.checkpoint_points
+
+        def _multi_checkpoint_and_exit():
+            idx = 0
+            while True:
+                inst_target = points[idx]
+                ckpt_path = ckpt_base / f"cpt.{inst_target}"
+                ckpt_path.mkdir(parents=True, exist_ok=True)
+                print(
+                    f"Instruction count reached {inst_target}. "
+                    f"Taking checkpoint in atomic core → {ckpt_path}"
+                )
+                simulator.save_checkpoint(ckpt_path)
+                idx += 1
+                if idx < len(points):
+                    delta = points[idx] - points[idx - 1]
+                    ff_cpu.scheduleInstStopAnyThread(delta)
+                    print(
+                        f"Scheduled next stop after {delta} more instructions "
+                        f"(checkpoint at {points[idx]})."
+                    )
+                    yield False
+                else:
+                    print("All checkpoints written. Exiting.")
+                    yield True
+
+        _ckpt_handler = _multi_checkpoint_and_exit()
+        print(
+            f"Taking {len(points)} checkpoint(s) at instruction counts: {points}."
+        )
+    else:
+
+        def _checkpoint_and_exit():
+            print(
+                f"Fast-forward done. Taking checkpoint in atomic core → {ckpt_base}"
+            )
+            simulator.save_checkpoint(ckpt_base)
+            print("Checkpoint written. Exiting.")
+            yield True  # exit immediately after checkpoint
+
+        _ckpt_handler = _checkpoint_and_exit()
+        print(f"Taking checkpoint after {_args.fast_forward} instructions.")
+
     simulator = Simulator(
         board=board,
         outdir=_args.outdir,
-        on_exit_event={ExitEvent.MAX_INSTS: _checkpoint_and_exit()},
+        on_exit_event={ExitEvent.MAX_INSTS: _ckpt_handler},
     )
 elif _args.restore_checkpoint:
     # Phase 2: restore in atomic core, fast-forward, then switch to O3
