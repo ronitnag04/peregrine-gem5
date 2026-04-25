@@ -3,7 +3,7 @@
 # print a summary of instructions and cycles for each.
 #
 # Requires: perf, and SPEC run directories from runcpu with the Peregrine
-# config (see configs/peregrine/README.md).
+# config (see configs/peregrine/README.md). Must use AWS ".metal" instances.
 #
 # Usage:
 #   SPECDIR=/path/to/cpu2017-root [SIZE=test|train] ./perf_spec_benchmarks.sh
