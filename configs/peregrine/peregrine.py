@@ -7,6 +7,7 @@ from typing import (
 )
 
 from utils import (
+    adversarial_benchmarks,
     peregrine_benchmarks,
     spec_benchmark_args,
     spec_benchmarks,
@@ -100,7 +101,9 @@ def parse_args():
     parser.add_argument(
         "--benchmark",
         type=str,
-        choices=peregrine_benchmarks + spec_benchmarks,
+        choices=peregrine_benchmarks
+        + spec_benchmarks
+        + adversarial_benchmarks,
     )
     # Execution behavior
     parser.add_argument("--trace", action="store_true", default=False)
@@ -435,6 +438,10 @@ elif _args.benchmark in spec_benchmarks:
     bin_file = spec_benchmark_args[_args.benchmark]["binary"]
     arguments = spec_benchmark_args[_args.benchmark]["arguments"]
     binary = BinaryResource(local_path=f"{bench_dir}/{bin_file}")
+elif _args.benchmark in adversarial_benchmarks:
+    path = f"/home/ubuntu/peregrine/benchmarks/build/bin/{_args.benchmark}"
+    binary = BinaryResource(local_path=path)
+    arguments = []
 else:
     raise ValueError(f"Invalid benchmark: {_args.benchmark}")
 

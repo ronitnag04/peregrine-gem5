@@ -1,12 +1,71 @@
 #!/usr/bin/env bash
-# Full SPEC region simulation + trace + ronamol training row generation.
-# - Input: sim_region_param_sweep.csv (benchmark,checkpoint,fast_forward + params)
+# Region simulation + trace + ronamol training row generation for one
+# benchmark suite (SPEC or adversarial).
+#
+# Flip SUITE below to switch between suites. Everything else is derived
+# from it. To change an individual path, edit that line directly.
+#
+# - Input: <suite>_sim_region_param_sweep.csv
 # - Output #1: raw sim CSV with added CPI column.
 # - Output #2: training CSV with CPI + sweep params + ronamol features.
 # - Per-run trace is gzipped, uploaded to S3, and deleted locally.
 
 set -euo pipefail
 
+# ---------- suite selection (edit this line) --------------------------------
+SUITE="adversarial"   # "spec" or "adversarial"
+
+# ---------- shared paths ----------------------------------------------------
+GEM5_ROOT="/home/ubuntu/peregrine-gem5"
+PEREGRINE_ROOT="/home/ubuntu/peregrine"
+GEM5_BIN="$GEM5_ROOT/build/X86/gem5.opt"
+
+MAX_INSTS=100000
+JOBS="$(nproc)"
+ROW_LIMIT=0      # 0 means all rows
+ROW_OFFSET=0     # rows skipped from data section (after header)
+
+# ---------- suite-derived paths ---------------------------------------------
+case "$SUITE" in
+  spec)
+    SWEEP_CSV="$GEM5_ROOT/configs/peregrine/sim_region_param_sweep.csv"
+    CHECKPOINT_DIR="$GEM5_ROOT/configs/peregrine/spec_checkpoints"
+    TRACE_ROOT="$PEREGRINE_ROOT/ronamol/traces_04_25_2026"
+    S3_PREFIX="s3://ronitnag04-peregrine/spec/spec-v3/traces_04_25_2026"
+
+    RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_v3"
+    TRAINING_CSV="$RESULTS_DIR/ronamol_spec_training_data_v3.csv"
+    FAILED_CSV_NAME="failed_runs_v3.csv"
+    ;;
+  adversarial)
+    SWEEP_CSV="$GEM5_ROOT/configs/peregrine/sim_region_param_sweep.csv"
+    CHECKPOINT_DIR="$GEM5_ROOT/configs/peregrine/adversarial_checkpoints"
+    TRACE_ROOT="$PEREGRINE_ROOT/ronamol/traces_adversarial"
+    S3_PREFIX="s3://ronitnag04-peregrine/adversarial/adversarial-v1/traces_04_30_2026"
+
+    RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_adversarial"
+    TRAINING_CSV="$RESULTS_DIR/ronamol_adversarial_training_data.csv"
+    FAILED_CSV_NAME="failed_runs_adversarial.csv"
+    ;;
+  *)
+    echo "Unknown SUITE='$SUITE' (expected 'spec' or 'adversarial')" >&2
+    exit 1
+    ;;
+esac
+
+RUN_OUT_BASE="$RESULTS_DIR/m5out"
+ERR_LOG_DIR="$RESULTS_DIR/errors"
+RESULTS_CSV="$RESULTS_DIR/sweep_results.csv"
+FAILED_CSV="$ERR_LOG_DIR/$FAILED_CSV_NAME"
+CSV_LOCK_FILE="$RESULTS_DIR/results.lock"
+FAILED_LOCK_FILE="$RESULTS_DIR/failed.lock"
+TRAINING_LOCK_FILE="$RESULTS_DIR/training.lock"
+
+export GEM5_ROOT PEREGRINE_ROOT GEM5_BIN SWEEP_CSV CHECKPOINT_DIR TRACE_ROOT S3_PREFIX
+export RESULTS_DIR RUN_OUT_BASE ERR_LOG_DIR RESULTS_CSV TRAINING_CSV FAILED_CSV
+export CSV_LOCK_FILE FAILED_LOCK_FILE TRAINING_LOCK_FILE MAX_INSTS
+
+# ---------- pre-flight ------------------------------------------------------
 if ! command -v parallel >/dev/null 2>&1; then
   echo "GNU parallel is required. Install with: apt install parallel" >&2
   exit 1
@@ -19,33 +78,6 @@ if ! command -v aws >/dev/null 2>&1; then
   echo "aws CLI is required for trace upload." >&2
   exit 1
 fi
-
-GEM5_ROOT="${GEM5_ROOT:-/home/ubuntu/peregrine-gem5}"
-PEREGRINE_ROOT="${PEREGRINE_ROOT:-/home/ubuntu/peregrine}"
-GEM5_BIN="${GEM5_BIN:-$GEM5_ROOT/build/X86/gem5.opt}"
-SWEEP_CSV="${SWEEP_CSV:-$GEM5_ROOT/configs/peregrine/sim_region_param_sweep.csv}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-$GEM5_ROOT/configs/peregrine/checkpoints}"
-TRACE_ROOT="${TRACE_ROOT:-$PEREGRINE_ROOT/ronamol/traces_04_25_2026}"
-S3_PREFIX="${S3_PREFIX:-s3://ronitnag04-peregrine/spec/spec-v3/traces_04_25_2026}"
-
-RESULTS_DIR="${RESULTS_DIR:-$GEM5_ROOT/configs/peregrine/sweep_outputs_v3}"
-RUN_OUT_BASE="${RUN_OUT_BASE:-$RESULTS_DIR/m5out}"
-ERR_LOG_DIR="${ERR_LOG_DIR:-$RESULTS_DIR/errors}"
-RESULTS_CSV="${RESULTS_CSV:-$RESULTS_DIR/sweep_results.csv}"
-TRAINING_CSV="${TRAINING_CSV:-$RESULTS_DIR/ronamol_spec_training_data_v3.csv}"
-FAILED_CSV="${FAILED_CSV:-$ERR_LOG_DIR/failed_runs_v3.csv}"
-CSV_LOCK_FILE="${CSV_LOCK_FILE:-$RESULTS_DIR/results.lock}"
-FAILED_LOCK_FILE="${FAILED_LOCK_FILE:-$RESULTS_DIR/failed.lock}"
-TRAINING_LOCK_FILE="${TRAINING_LOCK_FILE:-$RESULTS_DIR/training.lock}"
-
-MAX_INSTS="${MAX_INSTS:-100000}"
-JOBS="${JOBS:-$(nproc)}"
-ROW_LIMIT="${ROW_LIMIT:-0}"     # 0 means all rows
-ROW_OFFSET="${ROW_OFFSET:-0}"   # rows skipped from data section (after header)
-
-export GEM5_ROOT PEREGRINE_ROOT GEM5_BIN SWEEP_CSV CHECKPOINT_DIR TRACE_ROOT S3_PREFIX
-export RESULTS_DIR RUN_OUT_BASE ERR_LOG_DIR RESULTS_CSV TRAINING_CSV FAILED_CSV
-export CSV_LOCK_FILE FAILED_LOCK_FILE TRAINING_LOCK_FILE MAX_INSTS
 
 if [[ ! -d "$GEM5_ROOT" ]]; then
   echo "GEM5_ROOT not found: $GEM5_ROOT" >&2

@@ -30,7 +30,7 @@ from gen_param_sweep import (
     total_combinations,
 )
 
-benchmark_lengths: Dict[str, Tuple[int, int]] = {
+spec_benchmark_lengths: Dict[str, Tuple[int, int]] = {
     "505.mcf_r": (300_000_000, 1_570_000_000),
     "520.omnetpp_r": (100_000_000, 12_195_565_497),
     "523.xalancbmk_r": (100_000_000, 324_007_592),
@@ -42,6 +42,22 @@ benchmark_lengths: Dict[str, Tuple[int, int]] = {
     "502.gcc_r": (1_000_000, 15_000_000),
 }
 
+adversarial_benchmark_lengths: Dict[str, Tuple[int, int]] = {
+    "adversarial_branches": (100_000_000, 9_000_000_000),
+    "icache_blast": (100_000_000, 9_600_000_000),
+    "many_pages_streaming": (100_000_000, 7_000_000_000),
+    "pow2_stride_benign": (100_000_000, 9_200_000_000),
+    "pow2_stride_thrash": (100_000_000, 9_300_000_000),
+    "ptrchase_rand": (100_000_000, 2_100_000_000),
+    "serial_mul_chain": (100_000_000, 9_600_000_000),
+    "stlf_misalign": (100_000_000, 9_600_000_000),
+}
+
+BENCHMARK_SETS: Dict[str, Dict[str, Tuple[int, int]]] = {
+    "spec": spec_benchmark_lengths,
+    "adversarial": adversarial_benchmark_lengths,
+}
+
 
 @dataclass(frozen=True)
 class Region:
@@ -51,9 +67,32 @@ class Region:
 
 
 def allocate_region_counts(
-    lengths: Dict[str, Tuple[int, int]], num_regions: int
+    lengths: Dict[str, Tuple[int, int]],
+    num_regions: int,
+    even: bool = False,
 ) -> Dict[str, int]:
-    """Allocate per-benchmark counts proportional to benchmark span."""
+    """
+    Allocate per-benchmark region counts.
+
+    Default (`even=False`): proportional to each benchmark's instruction
+    span. Suited to SPEC where benchmark lengths differ by orders of
+    magnitude and proportional coverage yields a more representative
+    training distribution.
+
+    `even=True`: evenly divide `num_regions` across benchmarks. Any
+    remainder is spread across the first benchmarks in sorted order so
+    the allocation is deterministic. Use this for the adversarial set,
+    where each benchmark is a targeted probe of a distinct feature
+    blind spot and deserves equal representation in training.
+    """
+    benches = sorted(lengths.keys())
+    if even:
+        base = {b: num_regions // len(benches) for b in benches}
+        remainder = num_regions - sum(base.values())
+        for i in range(remainder):
+            base[benches[i]] += 1
+        return base
+
     spans = {b: stop - start for b, (start, stop) in lengths.items()}
     total_span = sum(spans.values())
     if total_span <= 0:
@@ -137,10 +176,11 @@ def sample_regions(
     region_length: int,
     min_fast_forward: int,
     seed: int,
+    even: bool = False,
 ) -> Dict[str, List[Region]]:
-    """Sample regions proportionally by benchmark span, with no overlap per benchmark."""
+    """Sample regions with either proportional or even per-benchmark allocation."""
     rng = random.Random(seed)
-    per_bench_counts = allocate_region_counts(lengths, num_regions)
+    per_bench_counts = allocate_region_counts(lengths, num_regions, even=even)
 
     regions_by_benchmark: Dict[str, List[Region]] = {}
     for bench, (bench_start, bench_stop) in lengths.items():
@@ -293,6 +333,27 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
+        "--benchmark-set",
+        type=str,
+        default="spec",
+        choices=sorted(BENCHMARK_SETS.keys()),
+        help=(
+            "Which benchmark-length table to sweep: 'spec' (SPEC CPU 2017) "
+            "or 'adversarial' (adversarial/probe benchmarks in "
+            "/home/ubuntu/peregrine/benchmarks)."
+        ),
+    )
+    parser.add_argument(
+        "--even-distribution",
+        action="store_true",
+        default=False,
+        help=(
+            "Distribute region samples evenly across benchmarks instead of "
+            "weighting by instruction span. Recommended for the adversarial "
+            "set where each benchmark probes a distinct feature blind spot."
+        ),
+    )
+    parser.add_argument(
         "-n",
         "--num-regions",
         type=int,
@@ -399,12 +460,15 @@ def main():
             "--checkpoint-max-distance must be >= --checkpoint-target-distance"
         )
 
+    lengths = BENCHMARK_SETS[args.benchmark_set]
+
     regions_by_benchmark = sample_regions(
-        lengths=benchmark_lengths,
+        lengths=lengths,
         num_regions=args.num_regions,
         region_length=args.region_length,
         min_fast_forward=args.min_fast_forward,
         seed=args.seed,
+        even=args.even_distribution,
     )
 
     checkpoint_rows = []

@@ -22,6 +22,17 @@ spec_benchmarks = [
     "502.gcc_r",
 ]
 
+adversarial_benchmarks = [
+    "adversarial_branches",
+    "icache_blast",
+    "many_pages_streaming",
+    "pow2_stride_benign",
+    "pow2_stride_thrash",
+    "ptrchase_rand",
+    "serial_mul_chain",
+    "stlf_misalign",
+]
+
 
 spec_benchmark_args = {
     "505.mcf_r": {
