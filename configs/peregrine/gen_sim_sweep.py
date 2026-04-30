@@ -45,10 +45,10 @@ spec_benchmark_lengths: Dict[str, Tuple[int, int]] = {
 adversarial_benchmark_lengths: Dict[str, Tuple[int, int]] = {
     "adversarial_branches": (100_000_000, 9_000_000_000),
     "icache_blast": (100_000_000, 9_600_000_000),
-    "many_pages_streaming": (100_000_000, 7_000_000_000),
+    "many_pages_streaming": (100_000_000, 6_800_000_000),
     "pow2_stride_benign": (100_000_000, 9_200_000_000),
     "pow2_stride_thrash": (100_000_000, 9_300_000_000),
-    "ptrchase_rand": (100_000_000, 2_100_000_000),
+    "ptrchase_rand": (100_000_000, 1_900_000_000),
     "serial_mul_chain": (100_000_000, 9_600_000_000),
     "stlf_misalign": (100_000_000, 9_600_000_000),
 }

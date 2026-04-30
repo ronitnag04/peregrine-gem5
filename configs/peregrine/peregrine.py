@@ -439,7 +439,7 @@ elif _args.benchmark in spec_benchmarks:
     arguments = spec_benchmark_args[_args.benchmark]["arguments"]
     binary = BinaryResource(local_path=f"{bench_dir}/{bin_file}")
 elif _args.benchmark in adversarial_benchmarks:
-    path = f"/home/ubuntu/peregrine/benchmarks/build/bin/{_args.benchmark}"
+    path = f"/home/ubuntu/peregrine/adversarial_benchmarks/build/bin/{_args.benchmark}"
     binary = BinaryResource(local_path=path)
     arguments = []
 else:
