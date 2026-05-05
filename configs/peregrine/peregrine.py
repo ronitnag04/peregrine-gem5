@@ -85,10 +85,10 @@ def parse_args():
         default="local",
         choices=["local", "tage"],
     )
-    # Cache sizes (e.g. "32KiB", "256KiB")
+    # Cache sizes (e.g. "32KiB", "512KiB")
     parser.add_argument("--l1d-size", type=str, default="32KiB")
     parser.add_argument("--l1i-size", type=str, default="32KiB")
-    parser.add_argument("--l2-size", type=str, default="256KiB")
+    parser.add_argument("--l2-size", type=str, default="512KiB")
     parser.add_argument("--max-icache-fills", type=int, default=4)
     parser.add_argument("--stride-prefetcher-degree", type=int, default=4)
     # Benchmark

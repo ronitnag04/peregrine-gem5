@@ -58,7 +58,7 @@ DEFAULT_PARAM_VALUES = {
     "branch_predictor": "local",
     "l1d_size": "32KiB",
     "l1i_size": "32KiB",
-    "l2_size": "256KiB",
+    "l2_size": "512KiB",
     "max_icache_fills": 4,
     "stride_prefetcher_degree": 4,
 }
