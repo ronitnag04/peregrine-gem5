@@ -72,7 +72,6 @@ def parse_args():
     parser.add_argument("--fetch-width", type=int, default=8)
     parser.add_argument("--decode-width", type=int, default=8)
     parser.add_argument("--rename-width", type=int, default=8)
-    parser.add_argument("--wb-width", type=int, default=8)
     parser.add_argument("--commit-width", type=int, default=8)
     # O3 queue sizes
     parser.add_argument("--rob-size", type=int, default=192)
