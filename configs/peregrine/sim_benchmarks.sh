@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ---------- suite selection (edit this line) --------------------------------
-SUITE="adversarial"   # "spec" or "adversarial"
+SUITE="spec_pareto"   # "spec", "adversarial", or "spec_pareto"
 
 # ---------- shared paths ----------------------------------------------------
 GEM5_ROOT="/home/ubuntu/peregrine-gem5"
@@ -36,6 +36,7 @@ case "$SUITE" in
     RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_v3"
     TRAINING_CSV="$RESULTS_DIR/ronamol_spec_training_data_v3.csv"
     FAILED_CSV_NAME="failed_runs_v3.csv"
+    ENABLE_TRACE_PIPELINE=1
     ;;
   adversarial)
     SWEEP_CSV="$GEM5_ROOT/configs/peregrine/sim_region_param_sweep.csv"
@@ -46,9 +47,21 @@ case "$SUITE" in
     RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_adversarial"
     TRAINING_CSV="$RESULTS_DIR/ronamol_adversarial_training_data.csv"
     FAILED_CSV_NAME="failed_runs_adversarial.csv"
+    ENABLE_TRACE_PIPELINE=1
+    ;;
+  spec_pareto)
+    SWEEP_CSV="$GEM5_ROOT/configs/peregrine/pareto_validation_sweeps/sampled_2048_pareto_validation_sweep.csv"
+    CHECKPOINT_DIR="$GEM5_ROOT/configs/peregrine/spec_checkpoints"
+    TRACE_ROOT=""
+    S3_PREFIX=""
+
+    RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_spec_pareto_validation"
+    TRAINING_CSV=""
+    FAILED_CSV_NAME="failed_runs_spec_pareto_validation.csv"
+    ENABLE_TRACE_PIPELINE=0
     ;;
   *)
-    echo "Unknown SUITE='$SUITE' (expected 'spec' or 'adversarial')" >&2
+    echo "Unknown SUITE='$SUITE' (expected 'spec', 'adversarial', or 'spec_pareto')" >&2
     exit 1
     ;;
 esac
@@ -63,7 +76,7 @@ TRAINING_LOCK_FILE="$RESULTS_DIR/training.lock"
 
 export GEM5_ROOT PEREGRINE_ROOT GEM5_BIN SWEEP_CSV CHECKPOINT_DIR TRACE_ROOT S3_PREFIX
 export RESULTS_DIR RUN_OUT_BASE ERR_LOG_DIR RESULTS_CSV TRAINING_CSV FAILED_CSV
-export CSV_LOCK_FILE FAILED_LOCK_FILE TRAINING_LOCK_FILE MAX_INSTS
+export CSV_LOCK_FILE FAILED_LOCK_FILE TRAINING_LOCK_FILE MAX_INSTS ENABLE_TRACE_PIPELINE
 
 # ---------- pre-flight ------------------------------------------------------
 if ! command -v parallel >/dev/null 2>&1; then
@@ -74,7 +87,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required." >&2
   exit 1
 fi
-if ! command -v aws >/dev/null 2>&1; then
+if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 ]] && ! command -v aws >/dev/null 2>&1; then
   echo "aws CLI is required for trace upload." >&2
   exit 1
 fi
@@ -96,7 +109,10 @@ if [[ ! -f "$SWEEP_CSV" ]]; then
   exit 1
 fi
 
-mkdir -p "$RESULTS_DIR" "$RUN_OUT_BASE" "$ERR_LOG_DIR" "$TRACE_ROOT"
+mkdir -p "$RESULTS_DIR" "$RUN_OUT_BASE" "$ERR_LOG_DIR"
+if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 ]]; then
+  mkdir -p "$TRACE_ROOT"
+fi
 touch "$CSV_LOCK_FILE" "$FAILED_LOCK_FILE" "$TRAINING_LOCK_FILE"
 
 parse_size_to_kb() {
@@ -252,6 +268,11 @@ run_one() {
   local log_file="$outdir/gem5_stdout.log"
   local stderr_file="$outdir/job.stderr"
 
+  local -a gem5_trace_args=()
+  if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 ]]; then
+    gem5_trace_args=(--trace)
+  fi
+
   set +e
   (
     cd "$GEM5_ROOT" || exit 1
@@ -261,7 +282,7 @@ run_one() {
       --checkpoint-dir "$checkpoint_path" \
       --fast-forward "$fast_forward" \
       --max-insts "$MAX_INSTS" \
-      --trace \
+      "${gem5_trace_args[@]}" \
       --branch-predictor "$branch_predictor" \
       --commit-width "$commit_width" \
       --decode-width "$decode_width" \
@@ -308,8 +329,13 @@ run_one() {
 
   local stats_file="$outdir/stats.txt"
   local trace_file="$outdir/trace.csv"
-  if [[ ! -f "$stats_file" || ! -f "$trace_file" ]]; then
-    append_failed_row "$row_id" "gem5_output" "missing stats.txt or trace.csv in $outdir" "$line"
+  if [[ ! -f "$stats_file" ]]; then
+    append_failed_row "$row_id" "gem5_output" "missing stats.txt in $outdir" "$line"
+    rm -rf "$outdir"
+    return 0
+  fi
+  if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 && ! -f "$trace_file" ]]; then
+    append_failed_row "$row_id" "gem5_output" "missing trace.csv in $outdir" "$line"
     rm -rf "$outdir"
     return 0
   fi
@@ -326,6 +352,11 @@ run_one() {
     flock -x 9
     printf '%s,%s\n' "$cpi" "$line" >> "$RESULTS_CSV"
   ) 9>>"$CSV_LOCK_FILE"
+
+  if [[ "$ENABLE_TRACE_PIPELINE" -ne 1 ]]; then
+    rm -rf "$outdir"
+    return 0
+  fi
 
   local trace_subdir="$TRACE_ROOT/row_${row_id}"
   mkdir -p "$trace_subdir"
