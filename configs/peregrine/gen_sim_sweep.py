@@ -5,17 +5,25 @@ Generate simulation sweep CSVs for peregrine.py.
 Outputs:
 1) Checkpoint generation CSV (one row per benchmark), where each row contains a
    comma-separated list of checkpoint instruction counts for one gem5 run.
-2) Region simulation CSV (one row per sampled region), with random architecture
-   parameter combinations and the nearest usable checkpoint + fast-forward distance.
+2) Region simulation CSV (one row per sampled region), with architecture
+   parameter combinations and the nearest usable checkpoint + fast-forward
+   distance.
+
+Architecture parameter rows are drawn by ``gen_param_sweep.sample_combinations``;
+the sampling strategy is selected via ``--param-sampling-mode``. See the
+module docstring in gen_param_sweep.py for the full set of modes (``grid``,
+``valid-uniform``, ``valid-lhs``, ``valid-cost-stratified``).
 """
 
 import argparse
 import bisect
+import os
 import random
 from dataclasses import dataclass
 from typing import (
     Dict,
     List,
+    Optional,
     Sequence,
     Tuple,
 )
@@ -24,9 +32,8 @@ import pandas as pd
 from gen_param_sweep import (
     PARAM_KEYS,
     PARAM_VALUES,
-    _compute_strides,
-    index_to_combination,
-    sample_random_indices,
+    SAMPLING_MODES,
+    sample_combinations,
     total_combinations,
 )
 
@@ -39,7 +46,7 @@ spec_benchmark_lengths: Dict[str, Tuple[int, int]] = {
     "531.deepsjeng_r": (100_000_000, 637_116_693),
     "557.xz_r": (100_000_000, 791_549_354),
     "525.x264_r": (10_000_000_000, 22_700_000_000),
-    "502.gcc_r": (1_000_000, 15_000_000),
+    # "502.gcc_r": (1_000_000, 15_000_000),
 }
 
 adversarial_benchmark_lengths: Dict[str, Tuple[int, int]] = {
@@ -236,6 +243,40 @@ def checkpoints_for_max_distance(
     return checkpoints, distances
 
 
+def load_existing_checkpoints(
+    checkpoint_dir: str,
+    benchmarks: Sequence[str],
+) -> Dict[str, List[int]]:
+    """Load checkpoint instruction counts from ``<checkpoint_dir>/<benchmark>/cpt.<n>/``.
+
+    Each benchmark's subdirectory is expected to contain entries named
+    ``cpt.<instruction_count>``; the numeric suffix is extracted and returned
+    sorted ascending. Benchmarks with no subdirectory return an empty list.
+    """
+    if not os.path.isdir(checkpoint_dir):
+        raise ValueError(
+            f"--checkpoint-dir {checkpoint_dir!r} is not a directory."
+        )
+
+    result: Dict[str, List[int]] = {}
+    for bench in benchmarks:
+        bench_dir = os.path.join(checkpoint_dir, bench)
+        if not os.path.isdir(bench_dir):
+            result[bench] = []
+            continue
+        cpts: List[int] = []
+        for entry in os.listdir(bench_dir):
+            if not entry.startswith("cpt."):
+                continue
+            suffix = entry[len("cpt.") :]
+            if not suffix.isdigit():
+                continue
+            cpts.append(int(suffix))
+        cpts.sort()
+        result[bench] = cpts
+    return result
+
+
 def choose_checkpoints(
     starts: Sequence[int],
     min_fast_forward: int,
@@ -300,30 +341,53 @@ def nearest_checkpoint_and_ff(
 
 
 def sample_param_rows(
-    n_rows: int, seed: int, with_replacement: bool
+    n_rows: int,
+    seed: int,
+    mode: str = "grid",
+    with_replacement: bool = False,
+    cost_stratified_oversample: int = 8,
+    cost_stratified_bins: int = None,
 ) -> List[Dict[str, object]]:
-    """Sample random parameter combinations using gen_param_sweep helpers."""
+    """Sample ``n_rows`` parameter combinations via gen_param_sweep's dispatcher.
+
+    ``mode`` selects the sampling strategy; see
+    ``gen_param_sweep.SAMPLING_MODES``. ``with_replacement`` applies only to
+    ``grid`` mode (feasibility-aware modes are always with-replacement against
+    the feasible region). Cost-stratified mode accepts its oversample/bin knobs.
+    Prints a one-line summary of the draw so sweep CSVs are traceable.
+    """
     if n_rows <= 0:
         return []
 
     rng = random.Random(seed)
-    random.seed(seed)
+    kwargs = {}
+    if mode == "grid":
+        kwargs["with_replacement"] = with_replacement
+    elif mode == "valid-cost-stratified":
+        kwargs["oversample"] = cost_stratified_oversample
+        kwargs["n_bins"] = cost_stratified_bins
+
+    rows, stats = sample_combinations(
+        PARAM_VALUES, n_rows, mode=mode, rng=rng, **kwargs
+    )
     total = total_combinations(PARAM_VALUES)
-    sizes, strides = _compute_strides(PARAM_VALUES)
-
-    if with_replacement:
-        indices = [rng.randrange(total) for _ in range(n_rows)]
+    if mode == "grid":
+        print(
+            f"Param sampling [{mode}]: {stats['n']} configs from grid of "
+            f"{total:.2e} (feasibility filter off)."
+        )
+    elif mode == "valid-cost-stratified":
+        print(
+            f"Param sampling [{mode}]: pool={stats['pool_n']} "
+            f"bins={stats['n_bins']} → {stats['n']} configs "
+            f"(valid subspace: {stats['total_valid']:.2e})."
+        )
     else:
-        n_unique = min(n_rows, total)
-        indices = sample_random_indices(total, n_unique)
-        if n_unique < n_rows:
-            extra = [rng.randrange(total) for _ in range(n_rows - n_unique)]
-            indices.extend(extra)
-
-    rows = [
-        index_to_combination(idx, PARAM_VALUES, sizes=sizes, strides=strides)
-        for idx in indices
-    ]
+        print(
+            f"Param sampling [{mode}]: {stats['n']} configs from valid "
+            f"subspace of {stats['total_valid']:.2e} "
+            f"({stats['total_valid'] / total:.2%} of raw space)."
+        )
     return rows
 
 
@@ -379,10 +443,58 @@ def parse_args():
         help="Seed for random parameter combinations.",
     )
     parser.add_argument(
+        "--param-sampling-mode",
+        type=str,
+        default="grid",
+        choices=list(SAMPLING_MODES),
+        help=(
+            "Architecture parameter sampling strategy. 'grid' is uniform iid "
+            "over the raw grid; 'valid-uniform' / 'valid-lhs' / "
+            "'valid-cost-stratified' restrict to the feasible region defined "
+            "by optimize_hw_config.is_valid. See gen_param_sweep.py for full "
+            "documentation of each mode."
+        ),
+    )
+    parser.add_argument(
         "--param-with-replacement",
         action="store_true",
         default=False,
-        help="Allow repeated random parameter combinations when sampling rows.",
+        help=(
+            "For --param-sampling-mode=grid only: allow repeated random "
+            "parameter combinations. Ignored by feasibility-aware modes."
+        ),
+    )
+    parser.add_argument(
+        "--param-cost-stratified-oversample",
+        type=int,
+        default=8,
+        help=(
+            "Oversample factor for valid-cost-stratified mode: draws "
+            "factor*N candidates, bins by hardware_cost, subsamples to N."
+        ),
+    )
+    parser.add_argument(
+        "--param-cost-stratified-bins",
+        type=int,
+        default=None,
+        help=(
+            "Number of cost-quantile bins for valid-cost-stratified mode. "
+            "Defaults to min(N, 20)."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory of pre-existing checkpoints laid out as "
+            "<dir>/<benchmark>/cpt.<instruction_count>/. When set, the "
+            "sampler uses these checkpoints directly instead of choosing "
+            "new ones, and the --checkpoint-target-distance / "
+            "--checkpoint-max-distance / --checkpoint-distance-step / "
+            "--checkpoint-*-weight flags are ignored. Benchmarks with no "
+            "subdirectory in this tree are dropped from the sweep."
+        ),
     )
     parser.add_argument(
         "--checkpoint-target-distance",
@@ -424,22 +536,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--output-checkpoint-csv",
+        "-o",
+        "--output-dir",
         type=str,
-        default="sim_checkpoint_sweep.csv",
-        help="Output CSV for checkpoint generation runs (one row per benchmark).",
-    )
-    parser.add_argument(
-        "--output-checkpoint-points-csv",
-        type=str,
-        default="sim_checkpoint_points.csv",
-        help="Output CSV with one row per benchmark/checkpoint pair.",
-    )
-    parser.add_argument(
-        "--output-sim-csv",
-        type=str,
-        default="sim_region_param_sweep.csv",
-        help="Output CSV for full region simulation runs.",
+        default="sim_sweep",
+        help=(
+            "Directory to write sweep CSVs into. Creates "
+            "sim_checkpoint_sweep.csv, sim_checkpoint_points.csv, and "
+            "sim_region_param_sweep.csv inside this directory."
+        ),
     )
     return parser.parse_args()
 
@@ -462,6 +567,20 @@ def main():
 
     lengths = BENCHMARK_SETS[args.benchmark_set]
 
+    preloaded_checkpoints: Optional[Dict[str, List[int]]] = None
+    if args.checkpoint_dir is not None:
+        preloaded_checkpoints = load_existing_checkpoints(
+            args.checkpoint_dir, sorted(lengths.keys())
+        )
+        missing = [b for b, cpts in preloaded_checkpoints.items() if not cpts]
+        if missing:
+            print(
+                f"--checkpoint-dir {args.checkpoint_dir}: no checkpoints "
+                f"found for {sorted(missing)}; dropping from sweep."
+            )
+        lengths = {b: lengths[b] for b in lengths if preloaded_checkpoints[b]}
+        preloaded_checkpoints = {b: preloaded_checkpoints[b] for b in lengths}
+
     regions_by_benchmark = sample_regions(
         lengths=lengths,
         num_regions=args.num_regions,
@@ -476,16 +595,19 @@ def main():
     benchmark_checkpoints: Dict[str, List[int]] = {}
 
     for bench, regions in regions_by_benchmark.items():
-        starts = [r.start for r in regions]
-        cpts = choose_checkpoints(
-            starts=starts,
-            min_fast_forward=args.min_fast_forward,
-            target_distance=args.checkpoint_target_distance,
-            max_distance=args.checkpoint_max_distance,
-            distance_step=args.checkpoint_distance_step,
-            distance_weight=args.checkpoint_distance_weight,
-            count_weight=args.checkpoint_count_weight,
-        )
+        if preloaded_checkpoints is not None:
+            cpts = preloaded_checkpoints[bench]
+        else:
+            starts = [r.start for r in regions]
+            cpts = choose_checkpoints(
+                starts=starts,
+                min_fast_forward=args.min_fast_forward,
+                target_distance=args.checkpoint_target_distance,
+                max_distance=args.checkpoint_max_distance,
+                distance_step=args.checkpoint_distance_step,
+                distance_weight=args.checkpoint_distance_weight,
+                count_weight=args.checkpoint_count_weight,
+            )
         benchmark_checkpoints[bench] = cpts
 
         checkpoint_rows.append(
@@ -512,7 +634,10 @@ def main():
     param_rows = sample_param_rows(
         n_rows=len(all_regions),
         seed=args.param_seed,
+        mode=args.param_sampling_mode,
         with_replacement=args.param_with_replacement,
+        cost_stratified_oversample=args.param_cost_stratified_oversample,
+        cost_stratified_bins=args.param_cost_stratified_bins,
     )
 
     sim_rows = []
@@ -533,13 +658,24 @@ def main():
         row.update(param_rows[i])
         sim_rows.append(row)
 
+    os.makedirs(args.output_dir, exist_ok=True)
+    output_checkpoint_csv = os.path.join(
+        args.output_dir, "sim_checkpoint_sweep.csv"
+    )
+    output_checkpoint_points_csv = os.path.join(
+        args.output_dir, "sim_checkpoint_points.csv"
+    )
+    output_sim_csv = os.path.join(
+        args.output_dir, "sim_region_param_sweep.csv"
+    )
+
     checkpoint_df = pd.DataFrame(checkpoint_rows).sort_values("benchmark")
-    checkpoint_df.to_csv(args.output_checkpoint_csv, index=False)
+    checkpoint_df.to_csv(output_checkpoint_csv, index=False)
 
     checkpoint_points_df = pd.DataFrame(checkpoint_point_rows).sort_values(
         ["benchmark", "checkpoint"]
     )
-    checkpoint_points_df.to_csv(args.output_checkpoint_points_csv, index=False)
+    checkpoint_points_df.to_csv(output_checkpoint_points_csv, index=False)
 
     sim_df = pd.DataFrame(sim_rows)
     sim_df = sim_df[
@@ -550,16 +686,16 @@ def main():
             *PARAM_KEYS,
         ]
     ]
-    sim_df.to_csv(args.output_sim_csv, index=False)
+    sim_df.to_csv(output_sim_csv, index=False)
 
     print(
-        f"Wrote {len(checkpoint_df)} benchmark rows to {args.output_checkpoint_csv}"
+        f"Wrote {len(checkpoint_df)} benchmark rows to {output_checkpoint_csv}"
     )
     print(
         "Wrote "
-        f"{len(checkpoint_points_df)} checkpoint rows to {args.output_checkpoint_points_csv}"
+        f"{len(checkpoint_points_df)} checkpoint rows to {output_checkpoint_points_csv}"
     )
-    print(f"Wrote {len(sim_df)} simulation rows to {args.output_sim_csv}")
+    print(f"Wrote {len(sim_df)} simulation rows to {output_sim_csv}")
 
 
 if __name__ == "__main__":
