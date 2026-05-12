@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ---------- suite selection (edit this line) --------------------------------
-SUITE="spec_pareto"   # "spec", "adversarial", or "spec_pareto"
+SUITE="spec"   # "spec", "adversarial", or "spec_pareto"
 
 # ---------- shared paths ----------------------------------------------------
 GEM5_ROOT="/home/ubuntu/peregrine-gem5"
@@ -28,14 +28,14 @@ ROW_OFFSET=0     # rows skipped from data section (after header)
 # ---------- suite-derived paths ---------------------------------------------
 case "$SUITE" in
   spec)
-    SWEEP_CSV="$GEM5_ROOT/configs/peregrine/sim_region_param_sweep.csv"
+    SWEEP_CSV="$GEM5_ROOT/configs/peregrine/sweep_spec_v4/sim_region_param_sweep.csv"
     CHECKPOINT_DIR="$GEM5_ROOT/configs/peregrine/spec_checkpoints"
-    TRACE_ROOT="$PEREGRINE_ROOT/ronamol/traces_04_25_2026"
-    S3_PREFIX="s3://ronitnag04-peregrine/spec/spec-v3/traces_04_25_2026"
+    TRACE_ROOT="$PEREGRINE_ROOT/ronamol/traces_05_12_2026"
+    S3_PREFIX="s3://ronitnag04-peregrine/spec/spec-v4/traces_05_12_2026"
 
-    RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_outputs_v3"
-    TRAINING_CSV="$RESULTS_DIR/ronamol_spec_training_data_v3.csv"
-    FAILED_CSV_NAME="failed_runs_v3.csv"
+    RESULTS_DIR="$GEM5_ROOT/configs/peregrine/sweep_spec_v4"
+    TRAINING_CSV="$RESULTS_DIR/ronamol_spec_training_data_v4.csv"
+    FAILED_CSV_NAME="failed_runs_v4.csv"
     ENABLE_TRACE_PIPELINE=1
     ;;
   adversarial)
@@ -114,6 +114,50 @@ if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 ]]; then
   mkdir -p "$TRACE_ROOT"
 fi
 touch "$CSV_LOCK_FILE" "$FAILED_LOCK_FILE" "$TRAINING_LOCK_FILE"
+
+SWEEP_LOG="$RESULTS_DIR/sweep.log"
+
+# ---------- sweep banner ----------------------------------------------------
+_total_rows=$(($(wc -l < "$SWEEP_CSV") - 1))
+(( _total_rows < 0 )) && _total_rows=0
+if [[ "$ROW_LIMIT" -gt 0 ]]; then
+  _planned_rows=$(( _total_rows - ROW_OFFSET ))
+  (( _planned_rows > ROW_LIMIT )) && _planned_rows=$ROW_LIMIT
+  (( _planned_rows < 0 )) && _planned_rows=0
+else
+  _planned_rows=$(( _total_rows - ROW_OFFSET ))
+  (( _planned_rows < 0 )) && _planned_rows=0
+fi
+
+SWEEP_START_EPOCH=$(date +%s)
+SWEEP_START_HUMAN=$(date '+%Y-%m-%d %H:%M:%S %Z')
+
+{
+  echo "=========================================================================="
+  echo " Peregrine gem5 sweep"
+  echo "=========================================================================="
+  echo " suite              : $SUITE"
+  echo " sweep csv          : $SWEEP_CSV"
+  echo " checkpoint dir     : $CHECKPOINT_DIR"
+  echo " results dir        : $RESULTS_DIR"
+  echo " results csv        : $RESULTS_CSV"
+  echo " failed csv         : $FAILED_CSV"
+  echo " run outdir base    : $RUN_OUT_BASE"
+  echo " trace pipeline     : $([[ $ENABLE_TRACE_PIPELINE -eq 1 ]] && echo enabled || echo disabled)"
+  if [[ "$ENABLE_TRACE_PIPELINE" -eq 1 ]]; then
+    echo " trace root         : $TRACE_ROOT"
+    echo " s3 prefix          : $S3_PREFIX"
+    echo " training csv       : $TRAINING_CSV"
+  fi
+  echo " total rows in csv  : $_total_rows"
+  echo " row offset         : $ROW_OFFSET"
+  echo " row limit          : $([[ $ROW_LIMIT -eq 0 ]] && echo "all" || echo $ROW_LIMIT)"
+  echo " planned sims       : $_planned_rows"
+  echo " max insts per sim  : $MAX_INSTS"
+  echo " parallel jobs      : $JOBS"
+  echo " sweep started at   : $SWEEP_START_HUMAN"
+  echo "=========================================================================="
+} | tee "$SWEEP_LOG"
 
 parse_size_to_kb() {
   local size="$1"
@@ -493,8 +537,25 @@ if [[ -d "$ERR_LOG_DIR" && -z "$(ls -A "$ERR_LOG_DIR")" ]]; then
   rmdir "$ERR_LOG_DIR"
 fi
 
-if [[ "$_failed_count" -gt 0 ]]; then
-  echo "Completed with failures. Failed runs CSV: $FAILED_CSV" >&2
-else
-  echo "All runs passed." >&2
-fi
+SWEEP_END_EPOCH=$(date +%s)
+SWEEP_END_HUMAN=$(date '+%Y-%m-%d %H:%M:%S %Z')
+_elapsed=$(( SWEEP_END_EPOCH - SWEEP_START_EPOCH ))
+_h=$(( _elapsed / 3600 ))
+_m=$(( (_elapsed % 3600) / 60 ))
+_s=$(( _elapsed % 60 ))
+_elapsed_human=$(printf '%dh %02dm %02ds' "$_h" "$_m" "$_s")
+
+{
+  echo "=========================================================================="
+  echo " sweep finished at  : $SWEEP_END_HUMAN"
+  echo " sweep started at   : $SWEEP_START_HUMAN"
+  echo " total elapsed      : $_elapsed_human ($_elapsed s)"
+  echo " planned sims       : $_planned_rows"
+  echo " failed rows        : $(( _failed_count > 0 ? _failed_count - 1 : 0 ))"
+  if [[ "$_failed_count" -gt 0 ]]; then
+    echo " status             : completed with failures (see $FAILED_CSV)"
+  else
+    echo " status             : all runs passed"
+  fi
+  echo "=========================================================================="
+} | tee -a "$SWEEP_LOG" >&2
